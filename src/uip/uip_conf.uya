@@ -1,0 +1,46 @@
+// src/uip/uip_conf.uya
+//
+// uIP-uya 第一版编译期配置。
+// 目标是先提供足够支撑类型层与状态层的固定常量，
+// 后续再按原版 uIP 的配置项逐步细化。
+
+export const UIP_LLH_LEN: usize = 14;
+export const UIP_IPH_LEN: usize = 20;
+export const UIP_TCPH_LEN: usize = 20;
+export const UIP_UDPH_LEN: usize = 8;
+export const UIP_ARPH_LEN: usize = 28;
+export const UIP_ETHH_LEN: usize = 14;
+
+export const UIP_BUFSIZE: usize = 1514;
+export const UIP_BUFSIZE_WITH_PADDING: usize = UIP_BUFSIZE + 2;
+
+export const UIP_CONNS: usize = 10;
+export const UIP_LISTENPORTS: usize = 20;
+export const UIP_UDP_CONNS: usize = 4;
+export const UIP_ARPTAB_SIZE: usize = 8;
+
+export const UIP_TCP_MSS: usize = 512;
+export const UIP_RECEIVE_WINDOW: usize = 512;
+export const UIP_RTO: u16 = 3;
+export const UIP_MAXRTX: u8 = 8;
+export const UIP_MAXSYNRTX: u8 = 5;
+export const UIP_TIME_WAIT_TIMEOUT: u8 = 120;
+export const UIP_ARP_MAXAGE: u8 = 120;
+
+export const UIP_UDP: bool = true;
+export const UIP_ACTIVE_OPEN: bool = true;
+export const UIP_STATISTICS: bool = false;
+export const UIP_LOGGING: bool = false;
+
+export const UIP_ETHTYPE_IP: u16 = 0x0800u16;
+export const UIP_ETHTYPE_ARP: u16 = 0x0806u16;
+export const UIP_PROTO_ICMP: byte = 1 as byte;
+export const UIP_PROTO_TCP: byte = 6 as byte;
+export const UIP_PROTO_UDP: byte = 17 as byte;
+
+export const UIP_TTL: byte = 64 as byte;
+
+export const UIP_DEFAULT_IPADDR: [byte: 4] = [192 as byte, 168 as byte, 0 as byte, 2 as byte];
+export const UIP_DEFAULT_DRADDR: [byte: 4] = [192 as byte, 168 as byte, 0 as byte, 1 as byte];
+export const UIP_DEFAULT_NETMASK: [byte: 4] = [255 as byte, 255 as byte, 255 as byte, 0 as byte];
+export const UIP_DEFAULT_ETHADDR: [byte: 6] = [2 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 2 as byte];

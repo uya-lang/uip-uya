@@ -1,0 +1,1878 @@
+use uip.uip_conf;
+use uip.uip_types.UipIpAddr;
+use uip.uip_types.UipEthAddr;
+use uip.uip_types.uip_ipaddr;
+use uip.uip_types.uip_ethaddr;
+use uip.uip_types.uip_tcp_appdata_offset;
+use uip.uip_types.uip_udp_appdata_offset;
+use uip.uip_types.UipTcpState;
+use uip.uip.uip_init;
+use uip.uip.uip_input;
+use uip.uip.uip_listen;
+use uip.uip.uip_poll_conn;
+use uip.uip.uip_close;
+use uip.uip.uip_unlisten;
+use uip.uip.uip_sethostaddr;
+use uip.uip.uip_udp_bind;
+use uip.uip.uip_udp_new;
+use uip.uip.uip_udp_periodic;
+use uip.uip.uip_send;
+use uip.uip.uip_send_at;
+use uip.uip.internal_uip_udp_send;
+use uip.uip.internal_uip_tcp_send;
+use uip.uip.internal_uip_tcp_close;
+use uip.uip.uip_state;
+use uip.uip_arp.uip_arp_arpin;
+use uip.uip_arp.uip_arp_init;
+use uip.uip_arp.uip_arp_ipin;
+use uip.uip_arp.uip_arp_out;
+use uip.uip_arp.uip_arp_state;
+use uip.uip_arp.uip_arp_timer;
+use uip.uip_arp.uip_arp_update;
+use std.testing.assert_eq_i32;
+use std.testing.expect;
+
+test "uip_conf_constants_are_sane" {
+    try expect(uip_conf.UIP_BUFSIZE > 0);
+    try expect(uip_conf.UIP_BUFSIZE_WITH_PADDING == uip_conf.UIP_BUFSIZE + 2);
+    try expect(uip_conf.UIP_CONNS > 0);
+    try expect(uip_conf.UIP_LISTENPORTS > 0);
+    try expect(uip_conf.UIP_ARPTAB_SIZE > 0);
+}
+
+test "uip_ipaddr_builder" {
+    const ip: UipIpAddr = uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte);
+    try assert_eq_i32(ip.addr[0] as i32, 0xc0a8);
+    try assert_eq_i32(ip.addr[1] as i32, 0x0002);
+}
+
+test "uip_ethaddr_builder" {
+    const mac: UipEthAddr = uip_ethaddr(1 as byte, 2 as byte, 3 as byte, 4 as byte, 5 as byte, 6 as byte);
+    try assert_eq_i32(mac.addr[0] as i32, 1);
+    try assert_eq_i32(mac.addr[5] as i32, 6);
+}
+
+test "uip_appdata_offsets" {
+    try assert_eq_i32(uip_tcp_appdata_offset() as i32, (uip_conf.UIP_LLH_LEN + uip_conf.UIP_IPH_LEN + uip_conf.UIP_TCPH_LEN) as i32);
+    try assert_eq_i32(uip_udp_appdata_offset() as i32, (uip_conf.UIP_LLH_LEN + uip_conf.UIP_IPH_LEN + uip_conf.UIP_UDPH_LEN) as i32);
+}
+
+test "uip_init_sets_default_addresses" {
+    uip_init();
+    try assert_eq_i32(uip_state.uip_hostaddr.addr[0] as i32, 0xc0a8);
+    try assert_eq_i32(uip_state.uip_hostaddr.addr[1] as i32, 0x0002);
+    try assert_eq_i32(uip_state.uip_draddr.addr[0] as i32, 0xc0a8);
+    try assert_eq_i32(uip_state.uip_draddr.addr[1] as i32, 0x0001);
+    try assert_eq_i32(uip_state.uip_netmask.addr[0] as i32, 0xffff);
+    try assert_eq_i32(uip_state.uip_netmask.addr[1] as i32, 0xff00);
+}
+
+test "uip_listen_and_unlisten_manage_fixed_table" {
+    uip_init();
+    try expect(uip_listen(0x1234u16));
+    try expect(uip_listen(0x1234u16));
+    try assert_eq_i32(uip_state.uip_listenports[0] as i32, 0x1234);
+    uip_unlisten(0x1234u16);
+    try assert_eq_i32(uip_state.uip_listenports[0] as i32, 0);
+}
+
+test "uip_send_registers_intent_without_materializing_packet" {
+    uip_init();
+    uip_state.uip_buf[100] = 0xaa as byte;
+    uip_state.uip_buf[101] = 0xbb as byte;
+    try expect(uip_send_at(100usize, 2usize));
+    try assert_eq_i32(uip_state.uip_send_offset as i32, 100);
+    try assert_eq_i32(uip_state.uip_send_len as i32, 2);
+    try assert_eq_i32(uip_state.uip_sappdata_offset as i32, 100);
+    try assert_eq_i32(uip_state.uip_slen as i32, 2);
+    try assert_eq_i32(uip_state.uip_len as i32, 0);
+}
+
+test "uip_poll_conn_materializes_registered_tcp_send" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.Established,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 1 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 8 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+    uip_state.uip_buf[54] = 0xde as byte;
+    uip_state.uip_buf[55] = 0xad as byte;
+    uip_state.uip_buf[56] = 0xbe as byte;
+    try expect(uip_send_at(54usize, 3usize));
+
+    uip_poll_conn(0usize);
+
+    try assert_eq_i32(uip_state.uip_len as i32, 57);
+    try assert_eq_i32(uip_state.uip_buf[47] as i32, 0x10);
+    try assert_eq_i32(uip_state.uip_buf[54] as i32, 0xde);
+    try assert_eq_i32(uip_state.uip_buf[55] as i32, 0xad);
+    try assert_eq_i32(uip_state.uip_buf[56] as i32, 0xbe);
+    try assert_eq_i32(uip_state.uip_conns[0].snd_nxt[3] as i32, 4);
+    try assert_eq_i32(uip_state.uip_send_len as i32, 0);
+}
+
+test "uip_udp_periodic_materializes_registered_udp_send" {
+    uip_init();
+    try expect(uip_udp_bind(0usize, 0x1000u16, 0x2000u16, uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte)));
+    uip_state.uip_buf[42] = 0xca as byte;
+    uip_state.uip_buf[43] = 0xfe as byte;
+    try expect(uip_send_at(42usize, 2usize));
+
+    uip_udp_periodic(0usize);
+
+    try assert_eq_i32(uip_state.uip_len as i32, 44);
+    try assert_eq_i32(uip_state.uip_buf[23] as i32, 17);
+    try assert_eq_i32(uip_state.uip_buf[34] as i32, 0x10);
+    try assert_eq_i32(uip_state.uip_buf[35] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[36] as i32, 0x20);
+    try assert_eq_i32(uip_state.uip_buf[37] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[42] as i32, 0xca);
+    try assert_eq_i32(uip_state.uip_buf[43] as i32, 0xfe);
+    try assert_eq_i32(uip_state.uip_send_len as i32, 0);
+}
+
+test "uip_input_replies_to_icmp_echo_for_hostaddr" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+
+    uip_state.uip_len = 14 + 20 + 8;
+
+    uip_state.uip_buf[0] = 0x02 as byte;
+    uip_state.uip_buf[1] = 0x00 as byte;
+    uip_state.uip_buf[2] = 0x00 as byte;
+    uip_state.uip_buf[3] = 0x00 as byte;
+    uip_state.uip_buf[4] = 0x00 as byte;
+    uip_state.uip_buf[5] = 0x02 as byte;
+    uip_state.uip_buf[6] = 0x10 as byte;
+    uip_state.uip_buf[7] = 0x11 as byte;
+    uip_state.uip_buf[8] = 0x12 as byte;
+    uip_state.uip_buf[9] = 0x13 as byte;
+    uip_state.uip_buf[10] = 0x14 as byte;
+    uip_state.uip_buf[11] = 0x15 as byte;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x1c as byte;
+    uip_state.uip_buf[18] = 0x12 as byte;
+    uip_state.uip_buf[19] = 0x34 as byte;
+    uip_state.uip_buf[20] = 0x00 as byte;
+    uip_state.uip_buf[21] = 0x00 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 1 as byte;
+    uip_state.uip_buf[24] = 0 as byte;
+    uip_state.uip_buf[25] = 0 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[24] = 0 as byte;
+    uip_state.uip_buf[25] = 0 as byte;
+
+    uip_state.uip_buf[34] = 8 as byte;
+    uip_state.uip_buf[35] = 0 as byte;
+    uip_state.uip_buf[36] = 0 as byte;
+    uip_state.uip_buf[37] = 0 as byte;
+    uip_state.uip_buf[38] = 0x12 as byte;
+    uip_state.uip_buf[39] = 0x34 as byte;
+    uip_state.uip_buf[40] = 0x00 as byte;
+    uip_state.uip_buf[41] = 0x01 as byte;
+
+    uip_input();
+
+    try assert_eq_i32(uip_state.uip_len as i32, 42);
+    try assert_eq_i32(uip_state.uip_buf[34] as i32, 0);
+    try assert_eq_i32(uip_state.uip_buf[26] as i32, 192);
+    try assert_eq_i32(uip_state.uip_buf[27] as i32, 168);
+    try assert_eq_i32(uip_state.uip_buf[28] as i32, 0);
+    try assert_eq_i32(uip_state.uip_buf[29] as i32, 2);
+    try assert_eq_i32(uip_state.uip_buf[30] as i32, 192);
+    try assert_eq_i32(uip_state.uip_buf[31] as i32, 168);
+    try assert_eq_i32(uip_state.uip_buf[32] as i32, 0);
+    try assert_eq_i32(uip_state.uip_buf[33] as i32, 1);
+    try expect(!(uip_state.uip_buf[24] == 0 as byte && uip_state.uip_buf[25] == 0 as byte));
+    try expect(!(uip_state.uip_buf[36] == 0 as byte && uip_state.uip_buf[37] == 0 as byte));
+}
+
+test "uip_input_matches_udp_conn_and_sets_appdata" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    try expect(uip_udp_bind(0usize, 0x1000u16, 0x2000u16, uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte)));
+
+    uip_state.uip_len = 14 + 20 + 8 + 4;
+
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x20 as byte;
+    uip_state.uip_buf[18] = 0x00 as byte;
+    uip_state.uip_buf[19] = 0x01 as byte;
+    uip_state.uip_buf[20] = 0x00 as byte;
+    uip_state.uip_buf[21] = 0x00 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 17 as byte;
+    uip_state.uip_buf[24] = 0 as byte;
+    uip_state.uip_buf[25] = 0 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[38] = 0x00 as byte;
+    uip_state.uip_buf[39] = 0x0c as byte;
+    uip_state.uip_buf[40] = 0x00 as byte;
+    uip_state.uip_buf[41] = 0x00 as byte;
+    uip_state.uip_buf[42] = 0xaa as byte;
+    uip_state.uip_buf[43] = 0xbb as byte;
+    uip_state.uip_buf[44] = 0xcc as byte;
+    uip_state.uip_buf[45] = 0xdd as byte;
+
+    uip_input();
+
+    try assert_eq_i32(uip_state.uip_len as i32, 46);
+    try assert_eq_i32(uip_state.uip_udp_conn_index, 0);
+    try assert_eq_i32(uip_state.uip_conn_index, -1);
+    try assert_eq_i32(uip_state.uip_appdata_offset as i32, 42);
+    try assert_eq_i32(uip_state.uip_sappdata_offset as i32, 42);
+}
+
+test "uip_input_drops_unmatched_udp_packet" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    try expect(uip_udp_bind(0usize, 0x1001u16, 0x2000u16, uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte)));
+
+    uip_state.uip_len = 14 + 20 + 8;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x1c as byte;
+    uip_state.uip_buf[18] = 0x00 as byte;
+    uip_state.uip_buf[19] = 0x01 as byte;
+    uip_state.uip_buf[20] = 0x00 as byte;
+    uip_state.uip_buf[21] = 0x00 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 17 as byte;
+    uip_state.uip_buf[24] = 0 as byte;
+    uip_state.uip_buf[25] = 0 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[38] = 0x00 as byte;
+    uip_state.uip_buf[39] = 0x08 as byte;
+    uip_state.uip_buf[40] = 0x00 as byte;
+    uip_state.uip_buf[41] = 0x00 as byte;
+
+    uip_input();
+
+    try assert_eq_i32(uip_state.uip_len as i32, 0);
+}
+
+test "uip_udp_send_builds_minimal_ipv4_udp_packet" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    try expect(uip_udp_bind(0usize, 0x1000u16, 0x2000u16, uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte)));
+
+    uip_state.uip_buf[42] = 0xde as byte;
+    uip_state.uip_buf[43] = 0xad as byte;
+    uip_state.uip_buf[44] = 0xbe as byte;
+    uip_state.uip_buf[45] = 0xef as byte;
+    try expect(uip_send_at(42usize, 4usize));
+    uip_udp_periodic(0usize);
+
+    try assert_eq_i32(uip_state.uip_len as i32, 46);
+    try assert_eq_i32(uip_state.uip_appdata_offset as i32, 42);
+    try assert_eq_i32(uip_state.uip_sappdata_offset as i32, 42);
+    try assert_eq_i32(uip_state.uip_slen as i32, 4);
+    try assert_eq_i32(uip_state.uip_buf[14] as i32, 0x45);
+    try assert_eq_i32(uip_state.uip_buf[16] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[17] as i32, 0x20);
+    try assert_eq_i32(uip_state.uip_buf[23] as i32, 17);
+    try assert_eq_i32(uip_state.uip_buf[26] as i32, 192);
+    try assert_eq_i32(uip_state.uip_buf[27] as i32, 168);
+    try assert_eq_i32(uip_state.uip_buf[28] as i32, 0);
+    try assert_eq_i32(uip_state.uip_buf[29] as i32, 2);
+    try assert_eq_i32(uip_state.uip_buf[30] as i32, 192);
+    try assert_eq_i32(uip_state.uip_buf[31] as i32, 168);
+    try assert_eq_i32(uip_state.uip_buf[32] as i32, 0);
+    try assert_eq_i32(uip_state.uip_buf[33] as i32, 1);
+    try assert_eq_i32(uip_state.uip_buf[34] as i32, 0x10);
+    try assert_eq_i32(uip_state.uip_buf[35] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[36] as i32, 0x20);
+    try assert_eq_i32(uip_state.uip_buf[37] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[38] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[39] as i32, 0x0c);
+    try assert_eq_i32(uip_state.uip_buf[40] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[41] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[42] as i32, 0xde);
+    try assert_eq_i32(uip_state.uip_buf[43] as i32, 0xad);
+    try assert_eq_i32(uip_state.uip_buf[44] as i32, 0xbe);
+    try assert_eq_i32(uip_state.uip_buf[45] as i32, 0xef);
+    try expect(!(uip_state.uip_buf[24] == 0 as byte && uip_state.uip_buf[25] == 0 as byte));
+}
+
+test "uip_arp_out_wraps_ip_packet_with_ethernet_header" {
+    uip_init();
+    uip_arp_init();
+    try expect(uip_udp_bind(0usize, 0x1000u16, 0x2000u16, uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte)));
+    try expect(uip_arp_update(
+        uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        uip_ethaddr(0x10 as byte, 0x11 as byte, 0x12 as byte, 0x13 as byte, 0x14 as byte, 0x15 as byte)
+    ));
+
+    uip_state.uip_buf[42] = 1 as byte;
+    uip_state.uip_buf[43] = 2 as byte;
+    try expect(uip_send_at(42usize, 2usize));
+    uip_udp_periodic(0usize);
+    try expect(uip_arp_out());
+
+    try assert_eq_i32(uip_state.uip_buf[0] as i32, 0x10);
+    try assert_eq_i32(uip_state.uip_buf[1] as i32, 0x11);
+    try assert_eq_i32(uip_state.uip_buf[2] as i32, 0x12);
+    try assert_eq_i32(uip_state.uip_buf[3] as i32, 0x13);
+    try assert_eq_i32(uip_state.uip_buf[4] as i32, 0x14);
+    try assert_eq_i32(uip_state.uip_buf[5] as i32, 0x15);
+    try assert_eq_i32(uip_state.uip_buf[6] as i32, 0x02);
+    try assert_eq_i32(uip_state.uip_buf[7] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[8] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[9] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[10] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[11] as i32, 0x02);
+    try assert_eq_i32(uip_state.uip_buf[12] as i32, 0x08);
+    try assert_eq_i32(uip_state.uip_buf[13] as i32, 0x00);
+}
+
+test "uip_arp_out_rewrites_to_arp_request_on_cache_miss" {
+    uip_init();
+    uip_arp_init();
+    try expect(uip_udp_bind(0usize, 0x1000u16, 0x2000u16, uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte)));
+    try expect(uip_send(0usize));
+    uip_udp_periodic(0usize);
+
+    try expect(uip_arp_out());
+    try assert_eq_i32(uip_state.uip_len as i32, 42);
+    try assert_eq_i32(uip_state.uip_buf[0] as i32, 0xff);
+    try assert_eq_i32(uip_state.uip_buf[1] as i32, 0xff);
+    try assert_eq_i32(uip_state.uip_buf[2] as i32, 0xff);
+    try assert_eq_i32(uip_state.uip_buf[3] as i32, 0xff);
+    try assert_eq_i32(uip_state.uip_buf[4] as i32, 0xff);
+    try assert_eq_i32(uip_state.uip_buf[5] as i32, 0xff);
+    try assert_eq_i32(uip_state.uip_buf[6] as i32, 0x02);
+    try assert_eq_i32(uip_state.uip_buf[7] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[8] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[9] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[10] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[11] as i32, 0x02);
+    try assert_eq_i32(uip_state.uip_buf[12] as i32, 0x08);
+    try assert_eq_i32(uip_state.uip_buf[13] as i32, 0x06);
+    try assert_eq_i32(uip_state.uip_buf[14] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[15] as i32, 0x01);
+    try assert_eq_i32(uip_state.uip_buf[16] as i32, 0x08);
+    try assert_eq_i32(uip_state.uip_buf[17] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[18] as i32, 0x06);
+    try assert_eq_i32(uip_state.uip_buf[19] as i32, 0x04);
+    try assert_eq_i32(uip_state.uip_buf[20] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[21] as i32, 0x01);
+    try assert_eq_i32(uip_state.uip_buf[28] as i32, 192);
+    try assert_eq_i32(uip_state.uip_buf[29] as i32, 168);
+    try assert_eq_i32(uip_state.uip_buf[30] as i32, 0);
+    try assert_eq_i32(uip_state.uip_buf[31] as i32, 2);
+    try assert_eq_i32(uip_state.uip_buf[38] as i32, 192);
+    try assert_eq_i32(uip_state.uip_buf[39] as i32, 168);
+    try assert_eq_i32(uip_state.uip_buf[40] as i32, 0);
+    try assert_eq_i32(uip_state.uip_buf[41] as i32, 1);
+}
+
+test "uip_arp_arpin_rewrites_request_for_host_to_reply" {
+    uip_init();
+    uip_arp_init();
+    uip_state.uip_len = 42;
+
+    uip_state.uip_buf[0] = 0xff as byte;
+    uip_state.uip_buf[1] = 0xff as byte;
+    uip_state.uip_buf[2] = 0xff as byte;
+    uip_state.uip_buf[3] = 0xff as byte;
+    uip_state.uip_buf[4] = 0xff as byte;
+    uip_state.uip_buf[5] = 0xff as byte;
+    uip_state.uip_buf[6] = 0x10 as byte;
+    uip_state.uip_buf[7] = 0x11 as byte;
+    uip_state.uip_buf[8] = 0x12 as byte;
+    uip_state.uip_buf[9] = 0x13 as byte;
+    uip_state.uip_buf[10] = 0x14 as byte;
+    uip_state.uip_buf[11] = 0x15 as byte;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x06 as byte;
+    uip_state.uip_buf[14] = 0x00 as byte;
+    uip_state.uip_buf[15] = 0x01 as byte;
+    uip_state.uip_buf[16] = 0x08 as byte;
+    uip_state.uip_buf[17] = 0x00 as byte;
+    uip_state.uip_buf[18] = 0x06 as byte;
+    uip_state.uip_buf[19] = 0x04 as byte;
+    uip_state.uip_buf[20] = 0x00 as byte;
+    uip_state.uip_buf[21] = 0x01 as byte;
+    uip_state.uip_buf[22] = 0x10 as byte;
+    uip_state.uip_buf[23] = 0x11 as byte;
+    uip_state.uip_buf[24] = 0x12 as byte;
+    uip_state.uip_buf[25] = 0x13 as byte;
+    uip_state.uip_buf[26] = 0x14 as byte;
+    uip_state.uip_buf[27] = 0x15 as byte;
+    uip_state.uip_buf[28] = 192 as byte;
+    uip_state.uip_buf[29] = 168 as byte;
+    uip_state.uip_buf[30] = 0 as byte;
+    uip_state.uip_buf[31] = 1 as byte;
+    uip_state.uip_buf[32] = 0x00 as byte;
+    uip_state.uip_buf[33] = 0x00 as byte;
+    uip_state.uip_buf[34] = 0x00 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x00 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[38] = 192 as byte;
+    uip_state.uip_buf[39] = 168 as byte;
+    uip_state.uip_buf[40] = 0 as byte;
+    uip_state.uip_buf[41] = 2 as byte;
+
+    try expect(uip_arp_arpin());
+    try assert_eq_i32(uip_state.uip_len as i32, 42);
+    try assert_eq_i32(uip_state.uip_buf[0] as i32, 0x10);
+    try assert_eq_i32(uip_state.uip_buf[1] as i32, 0x11);
+    try assert_eq_i32(uip_state.uip_buf[2] as i32, 0x12);
+    try assert_eq_i32(uip_state.uip_buf[3] as i32, 0x13);
+    try assert_eq_i32(uip_state.uip_buf[4] as i32, 0x14);
+    try assert_eq_i32(uip_state.uip_buf[5] as i32, 0x15);
+    try assert_eq_i32(uip_state.uip_buf[20] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[21] as i32, 0x02);
+    try assert_eq_i32(uip_state.uip_buf[28] as i32, 192);
+    try assert_eq_i32(uip_state.uip_buf[29] as i32, 168);
+    try assert_eq_i32(uip_state.uip_buf[30] as i32, 0);
+    try assert_eq_i32(uip_state.uip_buf[31] as i32, 2);
+    try assert_eq_i32(uip_state.uip_buf[38] as i32, 192);
+    try assert_eq_i32(uip_state.uip_buf[39] as i32, 168);
+    try assert_eq_i32(uip_state.uip_buf[40] as i32, 0);
+    try assert_eq_i32(uip_state.uip_buf[41] as i32, 1);
+}
+
+test "uip_arp_arpin_updates_cache_on_reply_for_host" {
+    uip_init();
+    uip_arp_init();
+    uip_state.uip_len = 42;
+
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x06 as byte;
+    uip_state.uip_buf[14] = 0x00 as byte;
+    uip_state.uip_buf[15] = 0x01 as byte;
+    uip_state.uip_buf[16] = 0x08 as byte;
+    uip_state.uip_buf[17] = 0x00 as byte;
+    uip_state.uip_buf[18] = 0x06 as byte;
+    uip_state.uip_buf[19] = 0x04 as byte;
+    uip_state.uip_buf[20] = 0x00 as byte;
+    uip_state.uip_buf[21] = 0x02 as byte;
+    uip_state.uip_buf[22] = 0x10 as byte;
+    uip_state.uip_buf[23] = 0x11 as byte;
+    uip_state.uip_buf[24] = 0x12 as byte;
+    uip_state.uip_buf[25] = 0x13 as byte;
+    uip_state.uip_buf[26] = 0x14 as byte;
+    uip_state.uip_buf[27] = 0x15 as byte;
+    uip_state.uip_buf[28] = 192 as byte;
+    uip_state.uip_buf[29] = 168 as byte;
+    uip_state.uip_buf[30] = 0 as byte;
+    uip_state.uip_buf[31] = 1 as byte;
+    uip_state.uip_buf[38] = 192 as byte;
+    uip_state.uip_buf[39] = 168 as byte;
+    uip_state.uip_buf[40] = 0 as byte;
+    uip_state.uip_buf[41] = 2 as byte;
+
+    try expect(!uip_arp_arpin());
+    try assert_eq_i32(uip_state.uip_len as i32, 0);
+    try assert_eq_i32(uip_arp_state.arp_table[0].ipaddr.addr[0] as i32, 0xc0a8);
+    try assert_eq_i32(uip_arp_state.arp_table[0].ipaddr.addr[1] as i32, 0x0001);
+    try assert_eq_i32(uip_arp_state.arp_table[0].ethaddr.addr[0] as i32, 0x10);
+    try assert_eq_i32(uip_arp_state.arp_table[0].ethaddr.addr[5] as i32, 0x15);
+}
+
+test "uip_arp_timer_keeps_fresh_entry" {
+    uip_init();
+    uip_arp_init();
+    try expect(uip_arp_update(
+        uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        uip_ethaddr(0x10 as byte, 0x11 as byte, 0x12 as byte, 0x13 as byte, 0x14 as byte, 0x15 as byte)
+    ));
+
+    uip_arp_timer();
+
+    try assert_eq_i32(uip_arp_state.arp_table[0].ipaddr.addr[0] as i32, 0xc0a8);
+    try assert_eq_i32(uip_arp_state.arp_table[0].ipaddr.addr[1] as i32, 0x0001);
+    try assert_eq_i32(uip_arp_state.arp_table[0].ethaddr.addr[0] as i32, 0x10);
+    try assert_eq_i32(uip_arp_state.arptime as i32, 1);
+}
+
+test "uip_arp_ipin_updates_cache_for_ipv4_sender_to_host" {
+    uip_init();
+    uip_arp_init();
+    uip_state.uip_len = 14 + 20;
+    uip_state.uip_buf[6] = 0x10 as byte;
+    uip_state.uip_buf[7] = 0x11 as byte;
+    uip_state.uip_buf[8] = 0x12 as byte;
+    uip_state.uip_buf[9] = 0x13 as byte;
+    uip_state.uip_buf[10] = 0x14 as byte;
+    uip_state.uip_buf[11] = 0x15 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+
+    uip_arp_ipin();
+
+    try assert_eq_i32(uip_arp_state.arp_table[0].ipaddr.addr[0] as i32, 0xc0a8);
+    try assert_eq_i32(uip_arp_state.arp_table[0].ipaddr.addr[1] as i32, 0x0001);
+    try assert_eq_i32(uip_arp_state.arp_table[0].ethaddr.addr[0] as i32, 0x10);
+    try assert_eq_i32(uip_arp_state.arp_table[0].ethaddr.addr[5] as i32, 0x15);
+}
+
+test "uip_arp_timer_expires_old_entry" {
+    uip_init();
+    uip_arp_init();
+    try expect(uip_arp_update(
+        uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        uip_ethaddr(0x10 as byte, 0x11 as byte, 0x12 as byte, 0x13 as byte, 0x14 as byte, 0x15 as byte)
+    ));
+
+    uip_arp_state.arptime = 119 as u8;
+    uip_arp_state.arp_table[0].time = 0 as u8;
+    uip_arp_timer();
+
+    try assert_eq_i32(uip_arp_state.arptime as i32, 120);
+    try assert_eq_i32(uip_arp_state.arp_table[0].ipaddr.addr[0] as i32, 0);
+    try assert_eq_i32(uip_arp_state.arp_table[0].ipaddr.addr[1] as i32, 0);
+    try assert_eq_i32(uip_arp_state.arp_table[0].ethaddr.addr[0] as i32, 0);
+    try assert_eq_i32(uip_arp_state.arp_table[0].ethaddr.addr[5] as i32, 0);
+}
+
+test "uip_udp_new_allocates_first_free_slot" {
+    uip_init();
+
+    const idx: i32 = uip_udp_new(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte), 0x2000u16);
+    try assert_eq_i32(idx, 0);
+    try assert_eq_i32(uip_state.uip_udp_conns[0].ripaddr.addr[0] as i32, 0xc0a8);
+    try assert_eq_i32(uip_state.uip_udp_conns[0].ripaddr.addr[1] as i32, 0x0001);
+    try assert_eq_i32(uip_state.uip_udp_conns[0].rport as i32, 0x2000);
+    try expect(uip_state.uip_udp_conns[0].lport != 0u16);
+    try assert_eq_i32(uip_state.uip_udp_conns[0].ttl as i32, 64);
+}
+
+test "uip_udp_new_returns_minus_one_when_table_full" {
+    uip_init();
+
+    let i: usize = 0;
+    while i < uip_conf.UIP_UDP_CONNS {
+        const idx: i32 = uip_udp_new(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, (1 + i) as byte), 0x2000u16 + (i as u16));
+        try assert_eq_i32(idx, i as i32);
+        i = i + 1;
+    }
+
+    const extra: i32 = uip_udp_new(uip_ipaddr(10 as byte, 0 as byte, 0 as byte, 1 as byte), 0x3000u16);
+    try assert_eq_i32(extra, -1);
+}
+
+test "uip_udp_send_sets_nonzero_checksum" {
+    uip_init();
+    try expect(uip_udp_bind(0usize, 0x1000u16, 0x2000u16, uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte)));
+    uip_state.uip_buf[42] = 0xde as byte;
+    uip_state.uip_buf[43] = 0xad as byte;
+    uip_state.uip_buf[44] = 0xbe as byte;
+    uip_state.uip_buf[45] = 0xef as byte;
+
+    try expect(uip_send_at(42usize, 4usize));
+    uip_udp_periodic(0usize);
+    try expect(!(uip_state.uip_buf[40] == 0 as byte && uip_state.uip_buf[41] == 0 as byte));
+}
+
+test "uip_input_drops_udp_packet_with_bad_checksum" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    try expect(uip_udp_bind(0usize, 0x1000u16, 0x2000u16, uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte)));
+
+    uip_state.uip_len = 14 + 20 + 8 + 4;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x20 as byte;
+    uip_state.uip_buf[18] = 0x00 as byte;
+    uip_state.uip_buf[19] = 0x01 as byte;
+    uip_state.uip_buf[20] = 0x00 as byte;
+    uip_state.uip_buf[21] = 0x00 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 17 as byte;
+    uip_state.uip_buf[24] = 0 as byte;
+    uip_state.uip_buf[25] = 0 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[38] = 0x00 as byte;
+    uip_state.uip_buf[39] = 0x0c as byte;
+    uip_state.uip_buf[40] = 0x12 as byte;
+    uip_state.uip_buf[41] = 0x34 as byte;
+    uip_state.uip_buf[42] = 0xaa as byte;
+    uip_state.uip_buf[43] = 0xbb as byte;
+    uip_state.uip_buf[44] = 0xcc as byte;
+    uip_state.uip_buf[45] = 0xdd as byte;
+
+    uip_input();
+    try assert_eq_i32(uip_state.uip_len as i32, 0);
+}
+
+test "uip_input_matches_listening_tcp_syn" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    try expect(uip_listen(0x1000u16));
+
+    uip_state.uip_len = 14 + 20 + 20;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x28 as byte;
+    uip_state.uip_buf[18] = 0x00 as byte;
+    uip_state.uip_buf[19] = 0x01 as byte;
+    uip_state.uip_buf[20] = 0x00 as byte;
+    uip_state.uip_buf[21] = 0x00 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[24] = 0 as byte;
+    uip_state.uip_buf[25] = 0 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[38] = 0x00 as byte;
+    uip_state.uip_buf[39] = 0x00 as byte;
+    uip_state.uip_buf[40] = 0x00 as byte;
+    uip_state.uip_buf[41] = 0x01 as byte;
+    uip_state.uip_buf[42] = 0x00 as byte;
+    uip_state.uip_buf[43] = 0x00 as byte;
+    uip_state.uip_buf[44] = 0x00 as byte;
+    uip_state.uip_buf[45] = 0x00 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x02 as byte;
+    uip_state.uip_buf[48] = 0x02 as byte;
+    uip_state.uip_buf[49] = 0x00 as byte;
+    uip_state.uip_buf[50] = 0x00 as byte;
+    uip_state.uip_buf[51] = 0x00 as byte;
+    uip_state.uip_buf[52] = 0x00 as byte;
+    uip_state.uip_buf[53] = 0x00 as byte;
+
+    uip_input();
+
+    try assert_eq_i32(uip_state.uip_conn_index, 0);
+    try assert_eq_i32(uip_state.uip_udp_conn_index, -1);
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.SynRcvd);
+    try assert_eq_i32(uip_state.uip_conns[0].lport as i32, 0x1000);
+    try assert_eq_i32(uip_state.uip_conns[0].rport as i32, 0x2000);
+    try assert_eq_i32(uip_state.uip_conns[0].ripaddr.addr[0] as i32, 0xc0a8);
+    try assert_eq_i32(uip_state.uip_conns[0].ripaddr.addr[1] as i32, 0x0001);
+    try assert_eq_i32(uip_state.uip_buf[34] as i32, 0x10);
+    try assert_eq_i32(uip_state.uip_buf[35] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[36] as i32, 0x20);
+    try assert_eq_i32(uip_state.uip_buf[37] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[42] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[43] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[44] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[45] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[46] as i32, 0x50);
+    try assert_eq_i32(uip_state.uip_buf[47] as i32, 0x12);
+    try expect(!(uip_state.uip_buf[50] == 0 as byte && uip_state.uip_buf[51] == 0 as byte));
+}
+
+test "uip_input_drops_unmatched_tcp_packet" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+
+    uip_state.uip_len = 14 + 20 + 20;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x28 as byte;
+    uip_state.uip_buf[18] = 0x00 as byte;
+    uip_state.uip_buf[19] = 0x01 as byte;
+    uip_state.uip_buf[20] = 0x00 as byte;
+    uip_state.uip_buf[21] = 0x00 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[24] = 0 as byte;
+    uip_state.uip_buf[25] = 0 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x10 as byte;
+
+    uip_input();
+    try assert_eq_i32(uip_state.uip_len as i32, 0);
+}
+
+test "uip_input_ack_completes_three_way_handshake" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.SynRcvd,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 1 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_state.uip_len = 14 + 20 + 20;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x28 as byte;
+    uip_state.uip_buf[18] = 0x00 as byte;
+    uip_state.uip_buf[19] = 0x02 as byte;
+    uip_state.uip_buf[20] = 0x00 as byte;
+    uip_state.uip_buf[21] = 0x00 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[24] = 0 as byte;
+    uip_state.uip_buf[25] = 0 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[38] = 0x00 as byte;
+    uip_state.uip_buf[39] = 0x00 as byte;
+    uip_state.uip_buf[40] = 0x00 as byte;
+    uip_state.uip_buf[41] = 0x02 as byte;
+    uip_state.uip_buf[42] = 0x00 as byte;
+    uip_state.uip_buf[43] = 0x00 as byte;
+    uip_state.uip_buf[44] = 0x00 as byte;
+    uip_state.uip_buf[45] = 0x01 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x10 as byte;
+    uip_state.uip_buf[48] = 0x02 as byte;
+    uip_state.uip_buf[49] = 0x00 as byte;
+    uip_state.uip_buf[50] = 0x00 as byte;
+    uip_state.uip_buf[51] = 0x00 as byte;
+    uip_state.uip_buf[52] = 0x00 as byte;
+    uip_state.uip_buf[53] = 0x00 as byte;
+
+    uip_input();
+
+    try assert_eq_i32(uip_state.uip_conn_index, 0);
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.Established);
+    try assert_eq_i32(uip_state.uip_len as i32, 54);
+}
+
+test "uip_input_drops_bad_ack_for_synrcvd" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.SynRcvd,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 1 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_state.uip_len = 14 + 20 + 20;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x28 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[42] = 0x00 as byte;
+    uip_state.uip_buf[43] = 0x00 as byte;
+    uip_state.uip_buf[44] = 0x00 as byte;
+    uip_state.uip_buf[45] = 0x00 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x10 as byte;
+
+    uip_input();
+
+    try assert_eq_i32(uip_state.uip_len as i32, 0);
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.SynRcvd);
+}
+
+test "uip_input_established_tcp_ack_only_has_zero_datalen" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.Established,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 1 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_state.uip_len = 14 + 20 + 20;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x28 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x10 as byte;
+
+    uip_input();
+
+    try assert_eq_i32(uip_state.uip_conn_index, 0);
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.Established);
+    try assert_eq_i32(uip_state.uip_datalen as i32, 0);
+    try assert_eq_i32(uip_state.uip_appdata_offset as i32, 54);
+}
+
+test "uip_input_established_tcp_payload_sets_datalen" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.Established,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 1 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_state.uip_len = 14 + 20 + 20 + 3;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x2b as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x18 as byte;
+    uip_state.uip_buf[50] = 0x00 as byte;
+    uip_state.uip_buf[51] = 0x00 as byte;
+    uip_state.uip_buf[54] = 0xaa as byte;
+    uip_state.uip_buf[55] = 0xbb as byte;
+    uip_state.uip_buf[56] = 0xcc as byte;
+
+    uip_input();
+
+    try assert_eq_i32(uip_state.uip_conn_index, 0);
+    try assert_eq_i32(uip_state.uip_datalen as i32, 3);
+    try assert_eq_i32(uip_state.uip_appdata_offset as i32, 54);
+    try assert_eq_i32(uip_state.uip_buf[uip_state.uip_appdata_offset] as i32, 0xaa);
+}
+
+test "uip_input_drops_tcp_packet_with_bad_checksum" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.Established,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 1 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_state.uip_len = 14 + 20 + 20;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x28 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x10 as byte;
+    uip_state.uip_buf[50] = 0x12 as byte;
+    uip_state.uip_buf[51] = 0x34 as byte;
+
+    uip_input();
+
+    try assert_eq_i32(uip_state.uip_len as i32, 0);
+}
+
+test "uip_input_established_tcp_payload_generates_ack" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.Established,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 1 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_state.uip_len = 14 + 20 + 20 + 3;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x2b as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[38] = 0x00 as byte;
+    uip_state.uip_buf[39] = 0x00 as byte;
+    uip_state.uip_buf[40] = 0x00 as byte;
+    uip_state.uip_buf[41] = 0x05 as byte;
+    uip_state.uip_buf[42] = 0x00 as byte;
+    uip_state.uip_buf[43] = 0x00 as byte;
+    uip_state.uip_buf[44] = 0x00 as byte;
+    uip_state.uip_buf[45] = 0x01 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x18 as byte;
+    uip_state.uip_buf[48] = 0x02 as byte;
+    uip_state.uip_buf[49] = 0x00 as byte;
+    uip_state.uip_buf[50] = 0x00 as byte;
+    uip_state.uip_buf[51] = 0x00 as byte;
+    uip_state.uip_buf[52] = 0x00 as byte;
+    uip_state.uip_buf[53] = 0x00 as byte;
+    uip_state.uip_buf[54] = 0xaa as byte;
+    uip_state.uip_buf[55] = 0xbb as byte;
+    uip_state.uip_buf[56] = 0xcc as byte;
+
+    uip_input();
+
+    try assert_eq_i32(uip_state.uip_len as i32, 54);
+    try assert_eq_i32(uip_state.uip_buf[34] as i32, 0x10);
+    try assert_eq_i32(uip_state.uip_buf[35] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[36] as i32, 0x20);
+    try assert_eq_i32(uip_state.uip_buf[37] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[47] as i32, 0x10);
+    try assert_eq_i32(uip_state.uip_buf[42] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[43] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[44] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[45] as i32, 0x08);
+    try assert_eq_i32(uip_state.uip_conns[0].rcv_nxt[3] as i32, 8);
+}
+
+test "uip_input_established_tcp_fin_generates_ack_and_enters_closewait" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.Established,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 1 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_state.uip_len = 14 + 20 + 20;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x28 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[38] = 0x00 as byte;
+    uip_state.uip_buf[39] = 0x00 as byte;
+    uip_state.uip_buf[40] = 0x00 as byte;
+    uip_state.uip_buf[41] = 0x05 as byte;
+    uip_state.uip_buf[42] = 0x00 as byte;
+    uip_state.uip_buf[43] = 0x00 as byte;
+    uip_state.uip_buf[44] = 0x00 as byte;
+    uip_state.uip_buf[45] = 0x01 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x11 as byte;
+    uip_state.uip_buf[48] = 0x02 as byte;
+    uip_state.uip_buf[49] = 0x00 as byte;
+    uip_state.uip_buf[50] = 0x00 as byte;
+    uip_state.uip_buf[51] = 0x00 as byte;
+    uip_state.uip_buf[52] = 0x00 as byte;
+    uip_state.uip_buf[53] = 0x00 as byte;
+
+    uip_input();
+
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.CloseWait);
+    try assert_eq_i32(uip_state.uip_len as i32, 54);
+    try assert_eq_i32(uip_state.uip_buf[47] as i32, 0x10);
+    try assert_eq_i32(uip_state.uip_buf[45] as i32, 0x06);
+    try assert_eq_i32(uip_state.uip_conns[0].rcv_nxt[3] as i32, 6);
+}
+
+test "uip_tcp_send_builds_ack_payload_and_advances_seq" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.Established,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 1 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 8 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+    uip_state.uip_conn_index = 0;
+    uip_state.uip_buf[54] = 0xde as byte;
+    uip_state.uip_buf[55] = 0xad as byte;
+    uip_state.uip_buf[56] = 0xbe as byte;
+
+    try expect(uip_send(3usize));
+    uip_poll_conn(0usize);
+
+    try assert_eq_i32(uip_state.uip_len as i32, 57);
+    try assert_eq_i32(uip_state.uip_buf[23] as i32, 6);
+    try assert_eq_i32(uip_state.uip_buf[34] as i32, 0x10);
+    try assert_eq_i32(uip_state.uip_buf[35] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[36] as i32, 0x20);
+    try assert_eq_i32(uip_state.uip_buf[37] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[42] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[43] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[44] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[45] as i32, 0x01);
+    try assert_eq_i32(uip_state.uip_buf[46] as i32, 0x50);
+    try assert_eq_i32(uip_state.uip_buf[47] as i32, 0x10);
+    try assert_eq_i32(uip_state.uip_buf[50] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[51] as i32, 0x08);
+    try assert_eq_i32(uip_state.uip_buf[54] as i32, 0xde);
+    try assert_eq_i32(uip_state.uip_buf[55] as i32, 0xad);
+    try assert_eq_i32(uip_state.uip_buf[56] as i32, 0xbe);
+    try assert_eq_i32(uip_state.uip_conns[0].snd_nxt[3] as i32, 4);
+}
+
+test "uip_tcp_close_sends_fin_ack_and_moves_to_finwait1" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.Established,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 1 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 8 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+    uip_state.uip_conn_index = 0;
+
+    try expect(uip_close());
+    uip_poll_conn(0usize);
+
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.FinWait1);
+    try assert_eq_i32(uip_state.uip_len as i32, 54);
+    try assert_eq_i32(uip_state.uip_buf[23] as i32, 6);
+    try assert_eq_i32(uip_state.uip_buf[47] as i32, 0x11);
+    try assert_eq_i32(uip_state.uip_buf[42] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[43] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[44] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[45] as i32, 0x01);
+    try assert_eq_i32(uip_state.uip_buf[50] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[51] as i32, 0x08);
+    try assert_eq_i32(uip_state.uip_conns[0].snd_nxt[3] as i32, 2);
+}
+
+test "uip_tcp_close_from_closewait_moves_to_lastack" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.CloseWait,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 1 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 6 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+    uip_state.uip_conn_index = 0;
+
+    try expect(uip_close());
+    uip_poll_conn(0usize);
+
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.LastAck);
+    try assert_eq_i32(uip_state.uip_buf[47] as i32, 0x11);
+    try assert_eq_i32(uip_state.uip_conns[0].snd_nxt[3] as i32, 2);
+}
+
+test "uip_input_ack_moves_finwait1_to_finwait2" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.FinWait1,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 8 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_state.uip_len = 14 + 20 + 20;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x28 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[42] = 0x00 as byte;
+    uip_state.uip_buf[43] = 0x00 as byte;
+    uip_state.uip_buf[44] = 0x00 as byte;
+    uip_state.uip_buf[45] = 0x02 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x10 as byte;
+
+    uip_input();
+
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.FinWait2);
+}
+
+test "uip_input_ack_moves_lastack_to_closed" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.LastAck,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 6 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_state.uip_len = 14 + 20 + 20;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x28 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[42] = 0x00 as byte;
+    uip_state.uip_buf[43] = 0x00 as byte;
+    uip_state.uip_buf[44] = 0x00 as byte;
+    uip_state.uip_buf[45] = 0x02 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x10 as byte;
+
+    uip_input();
+
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.Closed);
+    try assert_eq_i32(uip_state.uip_conns[0].lport as i32, 0);
+}
+
+test "uip_input_fin_moves_finwait2_to_timewait_and_acks" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.FinWait2,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 8 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_state.uip_len = 14 + 20 + 20;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x28 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[38] = 0x00 as byte;
+    uip_state.uip_buf[39] = 0x00 as byte;
+    uip_state.uip_buf[40] = 0x00 as byte;
+    uip_state.uip_buf[41] = 0x08 as byte;
+    uip_state.uip_buf[42] = 0x00 as byte;
+    uip_state.uip_buf[43] = 0x00 as byte;
+    uip_state.uip_buf[44] = 0x00 as byte;
+    uip_state.uip_buf[45] = 0x02 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x11 as byte;
+    uip_state.uip_buf[48] = 0x02 as byte;
+    uip_state.uip_buf[49] = 0x00 as byte;
+    uip_state.uip_buf[50] = 0x00 as byte;
+    uip_state.uip_buf[51] = 0x00 as byte;
+    uip_state.uip_buf[52] = 0x00 as byte;
+    uip_state.uip_buf[53] = 0x00 as byte;
+
+    uip_input();
+
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.TimeWait);
+    try assert_eq_i32(uip_state.uip_conns[0].rcv_nxt[3] as i32, 9);
+    try assert_eq_i32(uip_state.uip_len as i32, 54);
+    try assert_eq_i32(uip_state.uip_buf[47] as i32, 0x10);
+    try assert_eq_i32(uip_state.uip_buf[45] as i32, 0x09);
+}
+
+test "uip_periodic_expires_timewait_conn" {
+    uip_init();
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.TimeWait,
+        timer: 119 as u8,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 9 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_periodic(0usize);
+
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.Closed);
+    try assert_eq_i32(uip_state.uip_conns[0].lport as i32, 0);
+}
+
+test "uip_periodic_increments_retransmit_counter_after_rto" {
+    uip_init();
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.Established,
+        timer: 2 as u8,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 9 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_periodic(0usize);
+
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.Established);
+    try assert_eq_i32(uip_state.uip_conns[0].timer as i32, 0);
+    try assert_eq_i32(uip_state.uip_conns[0].nrtx as i32, 1);
+    try assert_eq_i32(uip_state.uip_len as i32, 0);
+}
+
+test "uip_periodic_closes_conn_after_max_retransmits" {
+    uip_init();
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.LastAck,
+        timer: 2 as u8,
+        nrtx: 8 as u8,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 9 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_periodic(0usize);
+
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.Closed);
+    try assert_eq_i32(uip_state.uip_conns[0].lport as i32, 0);
+}
+
+test "uip_periodic_retransmits_synack_in_synrcvd" {
+    uip_init();
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.SynRcvd,
+        timer: 2 as u8,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 1 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_periodic(0usize);
+
+    try assert_eq_i32(uip_state.uip_conns[0].nrtx as i32, 1);
+    try assert_eq_i32(uip_state.uip_len as i32, 54);
+    try assert_eq_i32(uip_state.uip_buf[47] as i32, 0x12);
+}
+
+test "uip_periodic_retransmits_finack_in_lastack" {
+    uip_init();
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.LastAck,
+        timer: 2 as u8,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 6 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_periodic(0usize);
+
+    try assert_eq_i32(uip_state.uip_conns[0].nrtx as i32, 1);
+    try assert_eq_i32(uip_state.uip_len as i32, 54);
+    try assert_eq_i32(uip_state.uip_buf[47] as i32, 0x11);
+}
+
+test "uip_input_rst_closes_established_conn" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.Established,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 9 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_state.uip_len = 14 + 20 + 20;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x28 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x04 as byte;
+
+    uip_input();
+
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.Closed);
+    try assert_eq_i32(uip_state.uip_conns[0].lport as i32, 0);
+    try assert_eq_i32(uip_state.uip_len as i32, 0);
+}
+
+test "uip_input_rst_closes_finwait1_conn" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.FinWait1,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 9 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_state.uip_len = 14 + 20 + 20;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x28 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x04 as byte;
+
+    uip_input();
+
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.Closed);
+    try assert_eq_i32(uip_state.uip_conns[0].lport as i32, 0);
+    try assert_eq_i32(uip_state.uip_len as i32, 0);
+}
+
+test "uip_input_fin_moves_finwait1_to_closing_and_acks" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.FinWait1,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 9 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_state.uip_len = 14 + 20 + 20;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x28 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[38] = 0x00 as byte;
+    uip_state.uip_buf[39] = 0x00 as byte;
+    uip_state.uip_buf[40] = 0x00 as byte;
+    uip_state.uip_buf[41] = 0x09 as byte;
+    uip_state.uip_buf[42] = 0x00 as byte;
+    uip_state.uip_buf[43] = 0x00 as byte;
+    uip_state.uip_buf[44] = 0x00 as byte;
+    uip_state.uip_buf[45] = 0x02 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x11 as byte;
+    uip_state.uip_buf[48] = 0x02 as byte;
+    uip_state.uip_buf[49] = 0x00 as byte;
+    uip_state.uip_buf[50] = 0x00 as byte;
+    uip_state.uip_buf[51] = 0x00 as byte;
+    uip_state.uip_buf[52] = 0x00 as byte;
+    uip_state.uip_buf[53] = 0x00 as byte;
+
+    uip_input();
+
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.Closing);
+    try assert_eq_i32(uip_state.uip_conns[0].rcv_nxt[3] as i32, 3);
+    try assert_eq_i32(uip_state.uip_len as i32, 54);
+    try assert_eq_i32(uip_state.uip_buf[47] as i32, 0x10);
+}
+
+test "uip_input_ack_moves_closing_to_timewait" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+    uip_state.uip_conns[0] = uip_types.UipConn{
+        tcpstateflags: UipTcpState.Closing,
+        timer: 0,
+        nrtx: 0,
+        lport: 0x1000u16,
+        rport: 0x2000u16,
+        ripaddr: uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte),
+        snd_nxt: [0 as byte, 0 as byte, 0 as byte, 2 as byte],
+        rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 3 as byte],
+        len: 0,
+        mss: 512u16,
+        initialmss: 512u16,
+        appstate: 0,
+    };
+
+    uip_state.uip_len = 14 + 20 + 20;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x28 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x00 as byte;
+    uip_state.uip_buf[42] = 0x00 as byte;
+    uip_state.uip_buf[43] = 0x00 as byte;
+    uip_state.uip_buf[44] = 0x00 as byte;
+    uip_state.uip_buf[45] = 0x02 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x10 as byte;
+
+    uip_input();
+
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.TimeWait);
+    try assert_eq_i32(uip_state.uip_conns[0].timer as i32, 0);
+}
+
+test "uip_poll_conn_synsent_sends_syn" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+
+    const index: i32 = uip_connect(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte), 0x2000u16);
+    try assert_eq_i32(index, 0);
+
+    uip_poll_conn(0);
+
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.SynSent);
+    try assert_eq_i32(uip_state.uip_len as i32, 54);
+    try assert_eq_i32(uip_state.uip_buf[23] as i32, 6);
+    try assert_eq_i32(uip_state.uip_buf[34] as i32, 0x10);
+    try assert_eq_i32(uip_state.uip_buf[35] as i32, 0x01);
+    try assert_eq_i32(uip_state.uip_buf[36] as i32, 0x20);
+    try assert_eq_i32(uip_state.uip_buf[37] as i32, 0x00);
+    try assert_eq_i32(uip_state.uip_buf[47] as i32, 0x02);
+    try assert_eq_i32(uip_state.uip_buf[41] as i32, 0x00);
+}
+
+test "uip_input_synack_moves_synsent_to_established_and_acks" {
+    uip_init();
+    uip_sethostaddr(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte));
+
+    const index: i32 = uip_connect(uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte), 0x2000u16);
+    try assert_eq_i32(index, 0);
+
+    uip_state.uip_len = 14 + 20 + 20;
+    uip_state.uip_buf[12] = 0x08 as byte;
+    uip_state.uip_buf[13] = 0x00 as byte;
+    uip_state.uip_buf[14] = 0x45 as byte;
+    uip_state.uip_buf[15] = 0x00 as byte;
+    uip_state.uip_buf[16] = 0x00 as byte;
+    uip_state.uip_buf[17] = 0x28 as byte;
+    uip_state.uip_buf[22] = 64 as byte;
+    uip_state.uip_buf[23] = 6 as byte;
+    uip_state.uip_buf[26] = 192 as byte;
+    uip_state.uip_buf[27] = 168 as byte;
+    uip_state.uip_buf[28] = 0 as byte;
+    uip_state.uip_buf[29] = 1 as byte;
+    uip_state.uip_buf[30] = 192 as byte;
+    uip_state.uip_buf[31] = 168 as byte;
+    uip_state.uip_buf[32] = 0 as byte;
+    uip_state.uip_buf[33] = 2 as byte;
+    uip_state.uip_buf[34] = 0x20 as byte;
+    uip_state.uip_buf[35] = 0x00 as byte;
+    uip_state.uip_buf[36] = 0x10 as byte;
+    uip_state.uip_buf[37] = 0x01 as byte;
+    uip_state.uip_buf[38] = 0x00 as byte;
+    uip_state.uip_buf[39] = 0x00 as byte;
+    uip_state.uip_buf[40] = 0x00 as byte;
+    uip_state.uip_buf[41] = 0x05 as byte;
+    uip_state.uip_buf[42] = 0x00 as byte;
+    uip_state.uip_buf[43] = 0x00 as byte;
+    uip_state.uip_buf[44] = 0x00 as byte;
+    uip_state.uip_buf[45] = 0x01 as byte;
+    uip_state.uip_buf[46] = 0x50 as byte;
+    uip_state.uip_buf[47] = 0x12 as byte;
+    uip_state.uip_buf[48] = 0x02 as byte;
+    uip_state.uip_buf[49] = 0x00 as byte;
+    uip_state.uip_buf[50] = 0x00 as byte;
+    uip_state.uip_buf[51] = 0x00 as byte;
+    uip_state.uip_buf[52] = 0x00 as byte;
+    uip_state.uip_buf[53] = 0x00 as byte;
+
+    uip_input();
+
+    try expect(uip_state.uip_conns[0].tcpstateflags == UipTcpState.Established);
+    try assert_eq_i32(uip_state.uip_conns[0].rcv_nxt[3] as i32, 6);
+    try assert_eq_i32(uip_state.uip_len as i32, 54);
+    try assert_eq_i32(uip_state.uip_buf[47] as i32, 0x10);
+    try assert_eq_i32(uip_state.uip_buf[41] as i32, 0x01);
+}

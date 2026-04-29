@@ -1,0 +1,81 @@
+// src/uip/uip_arch.uya
+//
+// Minimal architecture/helper layer for uya uIP port.
+// Holds byte-order helpers and checksum routines that should not remain baked
+// into the core protocol state machine long term.
+
+export fn read_be16(buf: [byte], offset: usize) u16 {
+    const hi: u16 = buf[offset] as u16;
+    const lo: u16 = buf[offset + 1] as u16;
+    return (hi << 8) | lo;
+}
+
+export fn write_be16(buf: [byte], offset: usize, value: u16) void {
+    buf[offset] = ((value >> 8) & 0xffu16) as byte;
+    buf[offset + 1] = (value & 0xffu16) as byte;
+}
+
+export fn write_u32_be(buf: [byte], offset: usize, value: u32) void {
+    buf[offset + 0] = ((value >> 24) & 0xffu32) as byte;
+    buf[offset + 1] = ((value >> 16) & 0xffu32) as byte;
+    buf[offset + 2] = ((value >> 8) & 0xffu32) as byte;
+    buf[offset + 3] = (value & 0xffu32) as byte;
+}
+
+export fn read_u32_be(buf: [byte], offset: usize) u32 {
+    return ((buf[offset + 0] as u32) << 24)
+        | ((buf[offset + 1] as u32) << 16)
+        | ((buf[offset + 2] as u32) << 8)
+        | (buf[offset + 3] as u32);
+}
+
+export fn checksum(buf: [byte], offset: usize, len: usize) u16 {
+    let sum: u32 = 0u32;
+    let i: usize = 0;
+    while i + 1 < len {
+        sum = sum + (read_be16(buf, offset + i) as u32);
+        i = i + 2;
+    }
+
+    if i < len {
+        sum = sum + ((buf[offset + i] as u32) << 8);
+    }
+
+    let folded: u32 = sum;
+    while (folded >> 16) != 0u32 {
+        folded = (folded & 0xffffu32) + (folded >> 16);
+    }
+
+    return (~folded & 0xffffu32) as u16;
+}
+
+export fn upper_layer_checksum(buf: [byte], proto: byte, src_ip_offset: usize, dest_ip_offset: usize, payload_offset: usize, payload_len: usize) u16 {
+    let sum: u32 = 0u32;
+    sum = sum + (read_be16(buf, src_ip_offset + 0) as u32);
+    sum = sum + (read_be16(buf, src_ip_offset + 2) as u32);
+    sum = sum + (read_be16(buf, dest_ip_offset + 0) as u32);
+    sum = sum + (read_be16(buf, dest_ip_offset + 2) as u32);
+    sum = sum + (proto as u32);
+    sum = sum + (payload_len as u32);
+
+    let i: usize = 0;
+    while i + 1 < payload_len {
+        sum = sum + (read_be16(buf, payload_offset + i) as u32);
+        i = i + 2;
+    }
+
+    if i < payload_len {
+        sum = sum + ((buf[payload_offset + i] as u32) << 8);
+    }
+
+    let folded: u32 = sum;
+    while (folded >> 16) != 0u32 {
+        folded = (folded & 0xffffu32) + (folded >> 16);
+    }
+
+    let result: u16 = (~folded & 0xffffu32) as u16;
+    if result == 0u16 {
+        return 0xffffu16;
+    }
+    return result;
+}

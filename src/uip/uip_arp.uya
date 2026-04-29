@@ -1,0 +1,286 @@
+// src/uip/uip_arp.uya
+//
+// uIP-uya 第一版 ARP 外接模块骨架。
+// 当前实现：ARP 表状态、初始化、静态表更新、以及 uip_arp_out() 的最小出站路径。
+// 若 ARP 未命中，则把当前 IP 包改写成 ARP request；后续再补 uip_arp_arpin()/timer 等完整行为。
+
+use uip.uip;
+use uip.uip_conf;
+use uip.uip_types;
+
+export struct UipArpState {
+    arp_table: [uip_types.UipArpEntry: uip_conf.UIP_ARPTAB_SIZE],
+    arptime: u8,
+}
+
+const EMPTY_IP_ADDR: uip_types.UipIpAddr = uip_types.UipIpAddr{ addr: [0, 0] };
+const EMPTY_ETH_ADDR: uip_types.UipEthAddr = uip_types.UipEthAddr{ addr: [0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte] };
+const BROADCAST_ETH_ADDR: uip_types.UipEthAddr = uip_types.UipEthAddr{ addr: [0xff as byte, 0xff as byte, 0xff as byte, 0xff as byte, 0xff as byte, 0xff as byte] };
+
+fn empty_arp_entry() uip_types.UipArpEntry {
+    return uip_types.UipArpEntry{
+        ipaddr: EMPTY_IP_ADDR,
+        ethaddr: EMPTY_ETH_ADDR,
+        time: 0,
+    };
+}
+
+export let uip_arp_state: UipArpState = UipArpState{
+    arp_table: [empty_arp_entry(); uip_conf.UIP_ARPTAB_SIZE],
+    arptime: 0,
+};
+
+fn read_be16(offset: usize) u16 {
+    const hi: u16 = uip.uip_state.uip_buf[offset] as u16;
+    const lo: u16 = uip.uip_state.uip_buf[offset + 1] as u16;
+    return (hi << 8) | lo;
+}
+
+fn write_be16(offset: usize, value: u16) void {
+    uip.uip_state.uip_buf[offset] = ((value >> 8) & 0xffu16) as byte;
+    uip.uip_state.uip_buf[offset + 1] = (value & 0xffu16) as byte;
+}
+
+fn write_ethaddr(offset: usize, addr: uip_types.UipEthAddr) void {
+    let i: usize = 0;
+    while i < 6 {
+        uip.uip_state.uip_buf[offset + i] = addr.addr[i];
+        i = i + 1;
+    }
+}
+
+fn write_ipaddr(offset: usize, addr: uip_types.UipIpAddr) void {
+    write_be16(offset, addr.addr[0]);
+    write_be16(offset + 2, addr.addr[1]);
+}
+
+fn ipaddr_from_buf(offset: usize) uip_types.UipIpAddr {
+    return uip_types.UipIpAddr{
+        addr: [read_be16(offset), read_be16(offset + 2)],
+    };
+}
+
+fn ipaddr_and(a: uip_types.UipIpAddr, b: uip_types.UipIpAddr) uip_types.UipIpAddr {
+    return uip_types.UipIpAddr{
+        addr: [a.addr[0] & b.addr[0], a.addr[1] & b.addr[1]],
+    };
+}
+
+fn find_arp_entry(ipaddr: uip_types.UipIpAddr) i32 {
+    let i: usize = 0;
+    while i < uip_conf.UIP_ARPTAB_SIZE {
+        if uip_types.uip_ipaddr_eq(uip_arp_state.arp_table[i].ipaddr, ipaddr) {
+            return i as i32;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn find_empty_arp_entry() i32 {
+    let i: usize = 0;
+    while i < uip_conf.UIP_ARPTAB_SIZE {
+        if uip_arp_state.arp_table[i].ipaddr.addr[0] == 0u16 && uip_arp_state.arp_table[i].ipaddr.addr[1] == 0u16 {
+            return i as i32;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn find_oldest_arp_entry() i32 {
+    let oldest_index: usize = 0;
+    let oldest_time: u8 = uip_arp_state.arp_table[0].time;
+    let i: usize = 1;
+    while i < uip_conf.UIP_ARPTAB_SIZE {
+        if ((uip_arp_state.arptime - uip_arp_state.arp_table[i].time) as u8) > ((uip_arp_state.arptime - oldest_time) as u8) {
+            oldest_index = i;
+        }
+        i = i + 1;
+    }
+    return oldest_index as i32;
+}
+
+fn select_arp_target_ip(dest_ip: uip_types.UipIpAddr) uip_types.UipIpAddr {
+    const dest_net: uip_types.UipIpAddr = ipaddr_and(dest_ip, uip.uip_state.uip_netmask);
+    const host_net: uip_types.UipIpAddr = ipaddr_and(uip.uip_state.uip_hostaddr, uip.uip_state.uip_netmask);
+    if uip_types.uip_ipaddr_eq(dest_net, host_net) {
+        return dest_ip;
+    }
+    return uip.uip_state.uip_draddr;
+}
+
+fn rewrite_ip_packet_as_arp_request(target_ip: uip_types.UipIpAddr) void {
+    write_ethaddr(0, BROADCAST_ETH_ADDR);
+    write_ethaddr(6, uip.uip_state.uip_ethaddr);
+    write_be16(12, uip_conf.UIP_ETHTYPE_ARP);
+
+    write_be16(14, 1u16);
+    write_be16(16, uip_conf.UIP_ETHTYPE_IP);
+    uip.uip_state.uip_buf[18] = 6 as byte;
+    uip.uip_state.uip_buf[19] = 4 as byte;
+    write_be16(20, 1u16);
+
+    write_ethaddr(22, uip.uip_state.uip_ethaddr);
+    write_ipaddr(28, uip.uip_state.uip_hostaddr);
+    write_ethaddr(32, EMPTY_ETH_ADDR);
+    write_ipaddr(38, target_ip);
+
+    uip.uip_state.uip_len = uip_conf.UIP_LLH_LEN + uip_conf.UIP_ARPH_LEN;
+}
+
+fn arp_packet_is_ipv4_ethernet() bool {
+    if uip.uip_state.uip_len < uip_conf.UIP_LLH_LEN + uip_conf.UIP_ARPH_LEN {
+        return false;
+    }
+    if read_be16(12) != uip_conf.UIP_ETHTYPE_ARP {
+        return false;
+    }
+    if read_be16(14) != 1u16 {
+        return false;
+    }
+    if read_be16(16) != uip_conf.UIP_ETHTYPE_IP {
+        return false;
+    }
+    if uip.uip_state.uip_buf[18] != 6 as byte || uip.uip_state.uip_buf[19] != 4 as byte {
+        return false;
+    }
+    return true;
+}
+
+export fn uip_arp_arpin() bool {
+    if !arp_packet_is_ipv4_ethernet() {
+        uip.uip_state.uip_len = 0;
+        return false;
+    }
+
+    const opcode: u16 = read_be16(20);
+    const sender_mac: uip_types.UipEthAddr = uip_types.UipEthAddr{
+        addr: [
+            uip.uip_state.uip_buf[22],
+            uip.uip_state.uip_buf[23],
+            uip.uip_state.uip_buf[24],
+            uip.uip_state.uip_buf[25],
+            uip.uip_state.uip_buf[26],
+            uip.uip_state.uip_buf[27],
+        ],
+    };
+    const sender_ip: uip_types.UipIpAddr = ipaddr_from_buf(28);
+    const target_ip: uip_types.UipIpAddr = ipaddr_from_buf(38);
+
+    if opcode == 1u16 {
+        if !uip_types.uip_ipaddr_eq(target_ip, uip.uip_state.uip_hostaddr) {
+            uip.uip_state.uip_len = 0;
+            return false;
+        }
+
+        uip_arp_update(sender_ip, sender_mac);
+
+        write_ethaddr(0, sender_mac);
+        write_ethaddr(6, uip.uip_state.uip_ethaddr);
+        write_be16(12, uip_conf.UIP_ETHTYPE_ARP);
+        write_be16(20, 2u16);
+        write_ethaddr(22, uip.uip_state.uip_ethaddr);
+        write_ipaddr(28, uip.uip_state.uip_hostaddr);
+        write_ethaddr(32, sender_mac);
+        write_ipaddr(38, sender_ip);
+        uip.uip_state.uip_len = uip_conf.UIP_LLH_LEN + uip_conf.UIP_ARPH_LEN;
+        return true;
+    }
+
+    if opcode == 2u16 {
+        if !uip_types.uip_ipaddr_eq(target_ip, uip.uip_state.uip_hostaddr) {
+            uip.uip_state.uip_len = 0;
+            return false;
+        }
+
+        uip_arp_update(sender_ip, sender_mac);
+        uip.uip_state.uip_len = 0;
+        return false;
+    }
+
+    uip.uip_state.uip_len = 0;
+    return false;
+}
+
+export fn uip_arp_ipin() void {
+    if uip.uip_state.uip_len < uip_conf.UIP_LLH_LEN + uip_conf.UIP_IPH_LEN {
+        return;
+    }
+
+    const src_ip: uip_types.UipIpAddr = ipaddr_from_buf(uip_conf.UIP_LLH_LEN + 12);
+    const dest_ip: uip_types.UipIpAddr = ipaddr_from_buf(uip_conf.UIP_LLH_LEN + 16);
+    if uip_types.uip_ipaddr_eq(dest_ip, uip.uip_state.uip_hostaddr) {
+        const src_mac: uip_types.UipEthAddr = uip_types.UipEthAddr{
+            addr: [
+                uip.uip_state.uip_buf[6],
+                uip.uip_state.uip_buf[7],
+                uip.uip_state.uip_buf[8],
+                uip.uip_state.uip_buf[9],
+                uip.uip_state.uip_buf[10],
+                uip.uip_state.uip_buf[11],
+            ],
+        };
+        _ = uip_arp_update(src_ip, src_mac);
+    }
+}
+
+export fn uip_arp_init() void {
+    let i: usize = 0;
+    while i < uip_conf.UIP_ARPTAB_SIZE {
+        uip_arp_state.arp_table[i] = empty_arp_entry();
+        i = i + 1;
+    }
+    uip_arp_state.arptime = 0;
+}
+
+export fn uip_arp_update(ipaddr: uip_types.UipIpAddr, ethaddr: uip_types.UipEthAddr) bool {
+    let slot: i32 = find_arp_entry(ipaddr);
+    if slot < 0 {
+        slot = find_empty_arp_entry();
+    }
+    if slot < 0 {
+        slot = find_oldest_arp_entry();
+    }
+
+    uip_arp_state.arp_table[slot as usize].ipaddr = ipaddr;
+    uip_arp_state.arp_table[slot as usize].ethaddr = ethaddr;
+    uip_arp_state.arp_table[slot as usize].time = uip_arp_state.arptime;
+    return true;
+}
+
+export fn uip_arp_timer() void {
+    uip_arp_state.arptime = uip_arp_state.arptime + 1 as u8;
+
+    let i: usize = 0;
+    while i < uip_conf.UIP_ARPTAB_SIZE {
+        const entry: uip_types.UipArpEntry = uip_arp_state.arp_table[i];
+        if (entry.ipaddr.addr[0] != 0 || entry.ipaddr.addr[1] != 0) {
+            const age: u8 = uip_arp_state.arptime - entry.time;
+            if age >= uip_conf.UIP_ARP_MAXAGE {
+                uip_arp_state.arp_table[i] = empty_arp_entry();
+            }
+        }
+        i = i + 1;
+    }
+}
+
+export fn uip_arp_out() bool {
+    if uip.uip_state.uip_len < uip_conf.UIP_LLH_LEN + uip_conf.UIP_IPH_LEN {
+        uip.uip_state.uip_len = 0;
+        return false;
+    }
+
+    const dest_ip: uip_types.UipIpAddr = ipaddr_from_buf(uip_conf.UIP_LLH_LEN + 16);
+    const arp_target_ip: uip_types.UipIpAddr = select_arp_target_ip(dest_ip);
+    const slot: i32 = find_arp_entry(arp_target_ip);
+    if slot < 0 {
+        rewrite_ip_packet_as_arp_request(arp_target_ip);
+        return true;
+    }
+
+    write_ethaddr(0, uip_arp_state.arp_table[slot as usize].ethaddr);
+    write_ethaddr(6, uip.uip_state.uip_ethaddr);
+    write_be16(12, uip_conf.UIP_ETHTYPE_IP);
+    return true;
+}

@@ -1,0 +1,174 @@
+// src/uip/uip_types.uya
+//
+// uIP-uya 第一版核心类型定义。
+// 当前优先覆盖 IPv4 + TCP/UDP/ICMP + Ethernet/ARP 最小闭环所需结构。
+
+use uip.uip_conf;
+
+export enum UipProcessFlag {
+    Data,
+    Timer,
+    PollRequest,
+    UdpTimer,
+}
+
+export const TCP_FIN: byte = 0x01 as byte;
+export const TCP_SYN: byte = 0x02 as byte;
+export const TCP_RST: byte = 0x04 as byte;
+export const TCP_PSH: byte = 0x08 as byte;
+export const TCP_ACK: byte = 0x10 as byte;
+export const TCP_URG: byte = 0x20 as byte;
+export const TCP_CTL: byte = 0x3f as byte;
+
+export const ICMP_ECHO_REPLY: byte = 0 as byte;
+export const ICMP_ECHO: byte = 8 as byte;
+
+export enum UipTcpState {
+    Closed,
+    Listen,
+    SynRcvd,
+    SynSent,
+    Established,
+    FinWait1,
+    FinWait2,
+    Closing,
+    TimeWait,
+    CloseWait,
+    LastAck,
+}
+
+export struct UipIpAddr {
+    addr: [u16: 2],
+}
+
+export struct UipEthAddr {
+    addr: [byte: 6],
+}
+
+export struct UipEthHdr {
+    dest: [byte: 6],
+    src: [byte: 6],
+    type_be: u16,
+}
+
+export struct UipArpHdr {
+    hwtype_be: u16,
+    protocol_be: u16,
+    hwlen: byte,
+    protolen: byte,
+    opcode_be: u16,
+    shwaddr: [byte: 6],
+    sipaddr: [u16: 2],
+    dhwaddr: [byte: 6],
+    dipaddr: [u16: 2],
+}
+
+export struct UipIpHdr {
+    vhl: byte,
+    tos: byte,
+    len_be: u16,
+    ipid_be: u16,
+    ipoffset_be: u16,
+    ttl: byte,
+    proto: byte,
+    ipchksum_be: u16,
+    srcipaddr: [u16: 2],
+    destipaddr: [u16: 2],
+}
+
+export struct UipTcpHdr {
+    srcport_be: u16,
+    destport_be: u16,
+    seqno: [byte: 4],
+    ackno: [byte: 4],
+    tcpoffset: byte,
+    flags: byte,
+    wnd_be: u16,
+    tcpchksum_be: u16,
+    urgp_be: u16,
+}
+
+export struct UipUdpHdr {
+    srcport_be: u16,
+    destport_be: u16,
+    udplen_be: u16,
+    udpchksum_be: u16,
+}
+
+export struct UipIcmpHdr {
+    type_: byte,
+    icode: byte,
+    icmpchksum_be: u16,
+    id_be: u16,
+    seqno_be: u16,
+}
+
+export struct UipTcpIpHdr {
+    ip: UipIpHdr,
+    tcp: UipTcpHdr,
+}
+
+export struct UipUdpIpHdr {
+    ip: UipIpHdr,
+    udp: UipUdpHdr,
+}
+
+export struct UipIcmpIpHdr {
+    ip: UipIpHdr,
+    icmp: UipIcmpHdr,
+}
+
+export const UIP_TCPIP_HLEN: usize = uip_conf.UIP_IPH_LEN + uip_conf.UIP_TCPH_LEN;
+export const UIP_UDPIP_HLEN: usize = uip_conf.UIP_IPH_LEN + uip_conf.UIP_UDPH_LEN;
+export const UIP_ICMPIP_HLEN: usize = uip_conf.UIP_IPH_LEN + 8;
+
+export struct UipConn {
+    tcpstateflags: UipTcpState,
+    timer: u8,
+    nrtx: u8,
+    lport: u16,
+    rport: u16,
+    ripaddr: UipIpAddr,
+    snd_nxt: [byte: 4],
+    rcv_nxt: [byte: 4],
+    len: u16,
+    mss: u16,
+    initialmss: u16,
+    appstate: u16,
+}
+
+export struct UipUdpConn {
+    lport: u16,
+    rport: u16,
+    ripaddr: UipIpAddr,
+    ttl: byte,
+    appstate: u16,
+}
+
+export struct UipArpEntry {
+    ipaddr: UipIpAddr,
+    ethaddr: UipEthAddr,
+    time: u8,
+}
+
+export fn uip_ipaddr(a: byte, b: byte, c: byte, d: byte) UipIpAddr {
+    const hi: u16 = ((a as u16) << 8) | (b as u16);
+    const lo: u16 = ((c as u16) << 8) | (d as u16);
+    return UipIpAddr{ addr: [hi, lo] };
+}
+
+export fn uip_ethaddr(a: byte, b: byte, c: byte, d: byte, e: byte, f: byte) UipEthAddr {
+    return UipEthAddr{ addr: [a, b, c, d, e, f] };
+}
+
+export fn uip_ipaddr_eq(a: UipIpAddr, b: UipIpAddr) bool {
+    return a.addr[0] == b.addr[0] && a.addr[1] == b.addr[1];
+}
+
+export fn uip_tcp_appdata_offset() usize {
+    return uip_conf.UIP_LLH_LEN + uip_conf.UIP_IPH_LEN + uip_conf.UIP_TCPH_LEN;
+}
+
+export fn uip_udp_appdata_offset() usize {
+    return uip_conf.UIP_LLH_LEN + uip_conf.UIP_IPH_LEN + uip_conf.UIP_UDPH_LEN;
+}
