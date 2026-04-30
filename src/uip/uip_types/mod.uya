@@ -3,7 +3,7 @@
 // uIP-uya 第一版核心类型定义。
 // 当前优先覆盖 IPv4 + TCP/UDP/ICMP + Ethernet/ARP 最小闭环所需结构。
 
-use uip.uip_conf;
+use uip_conf;
 
 export enum UipProcessFlag {
     Data,

@@ -40,7 +40,21 @@ export const UIP_PROTO_UDP: byte = 17 as byte;
 
 export const UIP_TTL: byte = 64 as byte;
 
-export const UIP_DEFAULT_IPADDR: [byte: 4] = [192 as byte, 168 as byte, 0 as byte, 2 as byte];
-export const UIP_DEFAULT_DRADDR: [byte: 4] = [192 as byte, 168 as byte, 0 as byte, 1 as byte];
-export const UIP_DEFAULT_NETMASK: [byte: 4] = [255 as byte, 255 as byte, 255 as byte, 0 as byte];
-export const UIP_DEFAULT_ETHADDR: [byte: 6] = [2 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 2 as byte];
+export const UIP_DEFAULT_IPADDR_0: byte = 192 as byte;
+export const UIP_DEFAULT_IPADDR_1: byte = 168 as byte;
+export const UIP_DEFAULT_IPADDR_2: byte = 0 as byte;
+export const UIP_DEFAULT_IPADDR_3: byte = 2 as byte;
+export const UIP_DEFAULT_DRADDR_0: byte = 192 as byte;
+export const UIP_DEFAULT_DRADDR_1: byte = 168 as byte;
+export const UIP_DEFAULT_DRADDR_2: byte = 0 as byte;
+export const UIP_DEFAULT_DRADDR_3: byte = 1 as byte;
+export const UIP_DEFAULT_NETMASK_0: byte = 255 as byte;
+export const UIP_DEFAULT_NETMASK_1: byte = 255 as byte;
+export const UIP_DEFAULT_NETMASK_2: byte = 255 as byte;
+export const UIP_DEFAULT_NETMASK_3: byte = 0 as byte;
+export const UIP_DEFAULT_ETHADDR_0: byte = 2 as byte;
+export const UIP_DEFAULT_ETHADDR_1: byte = 0 as byte;
+export const UIP_DEFAULT_ETHADDR_2: byte = 0 as byte;
+export const UIP_DEFAULT_ETHADDR_3: byte = 0 as byte;
+export const UIP_DEFAULT_ETHADDR_4: byte = 0 as byte;
+export const UIP_DEFAULT_ETHADDR_5: byte = 2 as byte;
