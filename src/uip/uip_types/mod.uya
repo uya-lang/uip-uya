@@ -3,7 +3,10 @@
 // uIP-uya 第一版核心类型定义。
 // 当前优先覆盖 IPv4 + TCP/UDP/ICMP + Ethernet/ARP 最小闭环所需结构。
 
-use uip_conf;
+use uip_conf.UIP_IPH_LEN;
+use uip_conf.UIP_TCPH_LEN;
+use uip_conf.UIP_UDPH_LEN;
+use uip_conf.UIP_LLH_LEN;
 
 export enum UipProcessFlag {
     Data,
@@ -118,9 +121,9 @@ export struct UipIcmpIpHdr {
     icmp: UipIcmpHdr,
 }
 
-export const UIP_TCPIP_HLEN: usize = uip_conf.UIP_IPH_LEN + uip_conf.UIP_TCPH_LEN;
-export const UIP_UDPIP_HLEN: usize = uip_conf.UIP_IPH_LEN + uip_conf.UIP_UDPH_LEN;
-export const UIP_ICMPIP_HLEN: usize = uip_conf.UIP_IPH_LEN + 8;
+export const UIP_TCPIP_HLEN: usize = UIP_IPH_LEN + UIP_TCPH_LEN;
+export const UIP_UDPIP_HLEN: usize = UIP_IPH_LEN + UIP_UDPH_LEN;
+export const UIP_ICMPIP_HLEN: usize = UIP_IPH_LEN + 8;
 
 export struct UipConn {
     tcpstateflags: UipTcpState,
@@ -166,9 +169,9 @@ export fn uip_ipaddr_eq(a: UipIpAddr, b: UipIpAddr) bool {
 }
 
 export fn uip_tcp_appdata_offset() usize {
-    return uip_conf.UIP_LLH_LEN + uip_conf.UIP_IPH_LEN + uip_conf.UIP_TCPH_LEN;
+    return UIP_LLH_LEN + UIP_IPH_LEN + UIP_TCPH_LEN;
 }
 
 export fn uip_udp_appdata_offset() usize {
-    return uip_conf.UIP_LLH_LEN + uip_conf.UIP_IPH_LEN + uip_conf.UIP_UDPH_LEN;
+    return UIP_LLH_LEN + UIP_IPH_LEN + UIP_UDPH_LEN;
 }
