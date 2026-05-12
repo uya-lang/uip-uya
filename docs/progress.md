@@ -218,6 +218,33 @@
 - 收到 payload 后生成 ACK
 - `uip_send()` 触发最小 ACK+payload 发送
 
+### 关闭状态机
+
+- `uip_close()` 从 `Established` 进入 `FinWait1`
+- `uip_close()` 从 `CloseWait` 进入 `LastAck`
+- `FinWait1 -> FinWait2`
+- `FinWait1 -> Closing`
+- `FinWait2 -> TimeWait`
+- `Closing -> TimeWait`
+- `LastAck -> Closed`
+- `Established + FIN -> CloseWait` 并返回 ACK
+
+### Timer / periodic
+
+- `TimeWait` 超时关闭
+- `Established` 到 RTO 时增加重传计数
+- `SynRcvd` 可重发 `SYN|ACK`
+- `LastAck` 可重发 `FIN|ACK`
+- 达到最大重传次数后关闭连接
+
+状态：**已实现当前测试覆盖下的最小 TCP 闭环**
+
+说明：
+
+- 当前 TCP 测试基线已达到 `50 / 50` 通过
+- 但这不等于“已完整复刻 C 版 uIP 全部 TCP 边界语义”
+- 后续仍需继续对照 `uip.c` 补齐 outstanding data、异常包、更多定时器分支
+
 ### 关闭路径
 
 - `uip_close()` 从 `Established` 进入 FIN 路径

@@ -51,13 +51,13 @@ uya 版继续沿用 uIP 的资源模型：
 
 ## 当前版本信息
 
-- 项目版本：`uya-uip v0.1.0`
+- 项目版本：`uya-uip v0.1.1`
 - 项目分支：`main`
-- 当前提交：`4843f24`
+- 当前提交：`e1e9b33`
 - uya 版本：`v0.9.4`
-- 最近验证时间：`2026-05-10`
+- 最近验证时间：`2026-05-12`
 - 编译状态：通过（`./uya/bin/uya test src/uip/uip_types_test.uya`）
-- 当前测试基线：`50` 个测试中 `44` 个通过，`6` 个失败
+- 当前测试基线：`50` 个测试中 `50` 个通过，`0` 个失败
 
 ---
 
@@ -85,13 +85,37 @@ uya 版继续沿用 uIP 的资源模型：
 - ARP cache / request / reply / aging
 - 发往本机的 ICMP echo request → echo reply
 - UDP 连接分配、最小入站匹配、周期发送、checksum 校验
-- TCP 最小握手、最小收发、最小关闭、部分定时器与重传路径
+- TCP 最小握手、最小收发、最小关闭、定时器与基础重传路径
+
+最近一轮对齐已完成：
+
+- TCP Established payload → ACK 语义修正
+- `FinWait1 / FinWait2 / Closing / LastAck / TimeWait` 关闭路径测试重写与实现收敛
+- `uip_periodic()` 下 Established 重传计数行为对齐
+- 当前 host-side TCP 回归测试已全部通过
 
 当前**尚未声明完成完整 C 版 uIP 移植**。后续工作仍然是：
 
 - 对照 `uip.c` / `uip.h` / `uip_arp.c` 补齐缺失功能
 - 保持实现边界不超出原版
 - 不新增超出原版的新能力
+
+---
+
+## 最近变更（`e1e9b33`）
+
+本次更新聚焦 **TCP 语义对齐** 与 **测试基线修复**：
+
+- 对齐 TCP 输入路径中的 `seq/ack/payload_len` 处理
+- 收紧 `Established` 下 payload 与 FIN 的 `rcv_nxt` 推进逻辑
+- 修正 `FinWait1 / FinWait2 / Closing / LastAck` 的关闭状态迁移
+- 调整 `uip_periodic()` 中 `Established` 的 RTO 计数行为
+- 重写冲突的 TCP 测试报文构造，统一 IPv4/TCP 头字段布局
+- 修复 `uip_input_established_tcp_payload_generates_ack` 用例
+
+结果：
+
+- `src/uip/uip_types_test.uya`：**50 / 50 通过**
 
 ---
 

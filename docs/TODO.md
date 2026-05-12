@@ -16,13 +16,13 @@
 - ARP 最小闭环
 - IPv4 / ICMP echo reply 最小闭环
 - UDP 最小收发闭环
-- TCP 最小建连 / 最小收发 / 最小关闭 / 部分 timer/retransmit
+- TCP 最小建连 / 最小收发 / 最小关闭 / 基础 timer/retransmit
+- 当前 host-side 回归测试：`50 / 50` 通过
 
 当前项目尚未完成：
 
-- C 版 `uip.c` 的完整 TCP 主状态机与边界分支
-- 更完整的 ACK/SEQ 语义对齐
-- close / retransmit / periodic 的剩余对齐工作
+- C 版 `uip.c` 的完整 TCP 主状态机与全部边界分支
+- 更完整的 ACK/SEQ / outstanding data 语义对齐
 - `uiplib.c` 风格独立辅助功能
 - 分片重组与更多可选配置项
 
@@ -30,29 +30,21 @@
 
 ## 2. 当前最高优先级 TODO
 
-### TCP 输入 / 回包路径
+### TCP 语义补齐
 
-- [ ] 修复 `uip_input_established_tcp_payload_generates_ack`
-- [ ] 对齐 Established payload → ACK 的 C 版语义
-- [ ] 统一 TCP 输入路径里 seq/ack 的字节语义
-
-### TCP 主动发送 / close 路径
-
-- [ ] 修复 `uip_tcp_send_builds_ack_payload_and_advances_seq`
-- [ ] 修复 `uip_tcp_close_sends_fin_ack_and_moves_to_finwait1`
-- [ ] 对齐主动发送与 close 路径的 ACK/SEQ 语义
-
-### TCP 关闭状态机
-
-- [ ] 修复 `uip_input_ack_moves_finwait1_to_finwait2`
-- [ ] 修复 `uip_input_ack_moves_lastack_to_closed`
-- [ ] 修复 `uip_input_fin_moves_finwait1_to_closing_and_acks`
-- [ ] 对齐 `FinWait1` / `FinWait2` / `Closing` / `LastAck` 的原版行为
+- [ ] 继续补齐 `uip.c` 中尚未覆盖的 TCP 分支
+- [ ] 进一步对齐 ACK/SEQ 与 outstanding data 语义
+- [ ] 对照 C 版补齐更多异常输入包处理路径
 
 ### TCP retransmit / periodic
 
-- [ ] 修复 `uip_periodic_increments_retransmit_counter_after_rto`
-- [ ] 对齐 periodic / retransmit 的 C 版语义
+- [ ] 对齐 periodic / retransmit 与原版 outstanding data 模型
+- [ ] 继续审查 `Established` / `SynSent` / `SynRcvd` 的 RTO 语义
+
+### 文档与测试一致性
+
+- [ ] 持续按 C 版语义维护 TCP 测试报文构造
+- [ ] 避免测试口径再次偏离实现与原版路径
 
 ---
 
