@@ -154,6 +154,19 @@ export struct UipArpEntry {
     time: u8,
 }
 
+export struct UipReassState {
+    active: bool,
+    timer: u8,
+    ipid: u16,
+    proto: byte,
+    srcipaddr: UipIpAddr,
+    destipaddr: UipIpAddr,
+    header_len: usize,
+    total_len: usize,
+    bitmap: [byte: (UIP_BUFSIZE / 8) + 1],
+    buf: [byte: UIP_BUFSIZE_WITH_PADDING],
+}
+
 export fn uip_ipaddr(a: byte, b: byte, c: byte, d: byte) UipIpAddr {
     const hi: u16 = ((a as u16) << 8) | (b as u16);
     const lo: u16 = ((c as u16) << 8) | (d as u16);

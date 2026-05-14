@@ -38,10 +38,13 @@ use uip_conf.UIP_PROTO_UDP;
 use uip_conf.UIP_PROTO_TCP;
 use uip_conf.UIP_RECEIVE_WINDOW;
 use uip_conf.UIP_UDP;
+use uip_conf.UIP_REASSEMBLY;
+use uip_conf.UIP_REASS_MAXAGE;
 use uip_types.UipConn;
 use uip_types.UipEthAddr;
 use uip_types.UipIpAddr;
 use uip_types.UipProcessFlag;
+use uip_types.UipReassState;
 use uip_types.UipTcpState;
 use uip_types.UipUdpConn;
 use uip_types.ICMP_ECHO;
@@ -78,6 +81,7 @@ export struct UipState {
     uip_conns: [UipConn: UIP_CONNS] = [],
     uip_udp_conns: [UipUdpConn: UIP_UDP_CONNS] = [],
     uip_listenports: [u16: UIP_LISTENPORTS] = [],
+    reass: UipReassState = UipReassState{},
 
     ipid: u16 = 0,
     iss: [byte: 4] = [],
@@ -138,6 +142,29 @@ fn empty_udp_conn() UipUdpConn {
     };
 }
 
+fn clear_reass_bitmap() void {
+    var i: usize = 0;
+    while i < (UIP_BUFSIZE / 8) + 1 {
+        uip_state.reass.bitmap[i] = 0 as byte;
+        i = i + 1;
+    }
+}
+
+fn empty_reass_state() UipReassState {
+    return UipReassState{
+        active: false,
+        timer: 0,
+        ipid: 0u16,
+        proto: 0 as byte,
+        srcipaddr: EMPTY_IP_ADDR,
+        destipaddr: EMPTY_IP_ADDR,
+        header_len: 0,
+        total_len: 0,
+        bitmap: [],
+        buf: [],
+    };
+}
+
 export var uip_state: UipState = UipState{};
 
 export fn uip_init() void {
@@ -163,6 +190,7 @@ export fn uip_init() void {
     uip_state.iss[2] = 0 as byte;
     uip_state.iss[3] = 0 as byte;
     uip_state.lastport = 4096;
+    uip_state.reass = empty_reass_state();
     uip_state.uip_acc32[0] = 0 as byte;
     uip_state.uip_acc32[1] = 0 as byte;
     uip_state.uip_acc32[2] = 0 as byte;
@@ -788,6 +816,184 @@ fn drop_current_packet() void {
     uip_state.uip_udp_conn_index = -1;
 }
 
+fn reass_bitmap_set(start: usize, len: usize) void {
+    var i: usize = 0;
+    while i < len {
+        const bit_index: usize = start + i;
+        const byte_index: usize = bit_index / 8;
+        if byte_index >= (UIP_BUFSIZE / 8) + 1 {
+            return;
+        }
+        const shift: i32 = (bit_index % 8usize) as i32;
+        const mask: byte = ((1 as i32) << shift) as byte;
+        uip_state.reass.bitmap[byte_index] = (uip_state.reass.bitmap[byte_index] | mask) as byte;
+        i = i + 1;
+    }
+}
+
+fn reass_bitmap_is_set(index: usize) bool {
+    const byte_index: usize = index / 8;
+    if byte_index >= (UIP_BUFSIZE / 8) + 1 {
+        return false;
+    }
+    const shift: i32 = (index % 8usize) as i32;
+    const mask: byte = ((1 as i32) << shift) as byte;
+    return (uip_state.reass.bitmap[byte_index] & mask) != 0 as byte;
+}
+
+fn reass_payload_complete() bool {
+    if uip_state.reass.total_len == 0 || uip_state.reass.header_len == 0 {
+        return false;
+    }
+    var i: usize = uip_state.reass.header_len;
+    while i < uip_state.reass.total_len {
+        if reass_bitmap_is_set(i) == false {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn clear_reass_state() void {
+    uip_state.reass.active = false;
+    uip_state.reass.timer = 0;
+    uip_state.reass.ipid = 0u16;
+    uip_state.reass.proto = 0 as byte;
+    uip_state.reass.srcipaddr = UipIpAddr{};
+    uip_state.reass.destipaddr = UipIpAddr{};
+    uip_state.reass.header_len = 0;
+    uip_state.reass.total_len = 0;
+    clear_reass_bitmap();
+}
+
+fn start_reass_datagram(ip_offset: usize, ip_header_len: usize, total_len: usize, ipid: u16, proto: byte, src: UipIpAddr, dest: UipIpAddr) void {
+    clear_reass_state();
+    uip_state.reass.active = true;
+    uip_state.reass.timer = 0;
+    uip_state.reass.ipid = ipid;
+    uip_state.reass.proto = proto;
+    uip_state.reass.srcipaddr = UipIpAddr{ addr: [src.addr[0], src.addr[1]] };
+    uip_state.reass.destipaddr = UipIpAddr{ addr: [dest.addr[0], dest.addr[1]] };
+    uip_state.reass.header_len = ip_header_len;
+    uip_state.reass.total_len = total_len;
+    var i: usize = 0;
+    while i < UIP_LLH_LEN + total_len {
+        uip_state.reass.buf[i] = uip_state.uip_buf[i];
+        i = i + 1;
+    }
+    reass_bitmap_set(0, ip_header_len);
+    core_write_be16_in(&uip_state.reass.buf[0], UIP_LLH_LEN + 6, 0u16);
+}
+
+fn core_write_be16_in(ptr: &byte, offset: usize, value: u16) void {
+    ptr[offset] = ((value >> 8) & 0xffu16) as byte;
+    ptr[offset + 1] = (value & 0xffu16) as byte;
+}
+
+fn core_read_be16_in(ptr: &const byte, offset: usize) u16 {
+    return (((ptr[offset] as u16) << 8) | (ptr[offset + 1] as u16)) as u16;
+}
+
+fn finalize_reass_packet() void {
+    var i: usize = 0;
+    while i < UIP_LLH_LEN + uip_state.reass.total_len {
+        uip_state.uip_buf[i] = uip_state.reass.buf[i];
+        i = i + 1;
+    }
+    core_write_be16(UIP_LLH_LEN + 2, uip_state.reass.total_len as u16);
+    core_write_be16(UIP_LLH_LEN + 6, 0u16);
+    core_write_be16(UIP_LLH_LEN + 10, 0u16);
+    core_write_be16(UIP_LLH_LEN + 10, ip_checksum(UIP_LLH_LEN, uip_state.reass.header_len));
+    uip_state.uip_len = UIP_LLH_LEN + uip_state.reass.total_len;
+    clear_reass_state();
+}
+
+fn process_reassembled_ipv4_input(ip_header_len: usize, total_len: usize, proto: byte) void {
+    uip_state.uip_appdata_offset = UIP_LLH_LEN + ip_header_len;
+    if proto == UIP_PROTO_ICMP {
+        process_icmp_echo_request(ip_header_len);
+        return;
+    }
+    if proto == UIP_PROTO_UDP {
+        process_udp_input(ip_header_len, total_len);
+        return;
+    }
+    if proto == UIP_PROTO_TCP {
+        process_tcp_input(ip_header_len, total_len);
+        return;
+    }
+    drop_current_packet();
+}
+
+fn process_ipv4_fragment_input(ip_header_len: usize, total_len: usize) void {
+    if UIP_REASSEMBLY == false {
+        drop_current_packet();
+        return;
+    }
+
+    const ip_offset: usize = UIP_LLH_LEN;
+    const flags_frag_offset: u16 = core_read_be16(ip_offset + 6);
+    const frag_offset_bytes: usize = ((flags_frag_offset & 0x1fffu16) as usize) * 8;
+    const more_fragments: bool = (flags_frag_offset & 0x2000u16) != 0u16;
+    const ipid: u16 = core_read_be16(ip_offset + 4);
+    const proto: byte = uip_state.uip_buf[ip_offset + 9];
+    const src: UipIpAddr = core_ipaddr_from_buf(ip_offset + 12);
+    const dest: UipIpAddr = core_ipaddr_from_buf(ip_offset + 16);
+    const payload_offset: usize = UIP_LLH_LEN + ip_header_len;
+    const payload_len: usize = total_len - ip_header_len;
+    const reass_payload_offset: usize = ip_header_len + frag_offset_bytes;
+    const reass_total_candidate: usize = reass_payload_offset + payload_len;
+
+    if total_len > UIP_BUFSIZE || reass_total_candidate > UIP_BUFSIZE {
+        clear_reass_state();
+        drop_current_packet();
+        return;
+    }
+
+    if frag_offset_bytes == 0 {
+        start_reass_datagram(ip_offset, ip_header_len, total_len, ipid, proto, src, dest);
+    } else {
+        if uip_state.reass.active == false {
+            drop_current_packet();
+            return;
+        }
+        if uip_state.reass.ipid != ipid || uip_state.reass.proto != proto {
+            drop_current_packet();
+            return;
+        }
+        if uip_ipaddr_eq(uip_state.reass.srcipaddr, src) == false || uip_ipaddr_eq(uip_state.reass.destipaddr, dest) == false {
+            drop_current_packet();
+            return;
+        }
+    }
+
+    if uip_state.reass.header_len != ip_header_len {
+        clear_reass_state();
+        drop_current_packet();
+        return;
+    }
+
+    var i: usize = 0;
+    while i < payload_len {
+        uip_state.reass.buf[UIP_LLH_LEN + reass_payload_offset + i] = uip_state.uip_buf[payload_offset + i];
+        i = i + 1;
+    }
+    reass_bitmap_set(reass_payload_offset, payload_len);
+
+    if more_fragments == false {
+        uip_state.reass.total_len = reass_total_candidate;
+    }
+
+    if reass_payload_complete() == false {
+        drop_current_packet();
+        return;
+    }
+
+    finalize_reass_packet();
+    process_reassembled_ipv4_input(ip_header_len, uip_state.uip_len - UIP_LLH_LEN, proto);
+}
+
 fn process_icmp_echo_request(ip_header_len: usize) void {
     const icmp_offset: usize = UIP_LLH_LEN + ip_header_len;
     if uip_state.uip_len < icmp_offset + 8 {
@@ -977,6 +1183,19 @@ fn process_tcp_input(ip_header_len: usize, total_len: usize) void {
 
             if uip_state.uip_conns[i].tcpstateflags == UipTcpState.SynRcvd {
                 const expected_ack: u32 = conn_snd_nxt_u32(uip_state.uip_conns[i].snd_nxt);
+                const expected_seq: u32 = conn_rcv_nxt_u32(uip_state.uip_conns[i].rcv_nxt);
+                if payload_len > 0 || (flags & TCP_FIN) != 0 as byte || (flags & TCP_RST) != 0 as byte {
+                    drop_current_packet();
+                    return;
+                }
+                if (flags & TCP_SYN) != 0 as byte {
+                    drop_current_packet();
+                    return;
+                }
+                if seqno != expected_seq {
+                    drop_current_packet();
+                    return;
+                }
                 if (flags & TCP_ACK) == 0 as byte || ackno != expected_ack {
                     drop_current_packet();
                     return;
@@ -984,7 +1203,15 @@ fn process_tcp_input(ip_header_len: usize, total_len: usize) void {
                 uip_state.uip_conns[i].tcpstateflags = UipTcpState.Established;
             } else if uip_state.uip_conns[i].tcpstateflags == UipTcpState.SynSent {
                 const expected_ack: u32 = conn_snd_nxt_u32(uip_state.uip_conns[i].snd_nxt);
-                if (flags & TCP_SYN) == 0 as byte || (flags & TCP_ACK) == 0 as byte || ackno != expected_ack {
+                if payload_len > 0 || (flags & TCP_FIN) != 0 as byte || (flags & TCP_RST) != 0 as byte {
+                    drop_current_packet();
+                    return;
+                }
+                if (flags & TCP_RST) != 0 as byte {
+                    drop_current_packet();
+                    return;
+                }
+                if (flags & TCP_SYN) == 0 as byte || (flags & TCP_ACK) == 0 as byte || ackno != expected_ack || seqno == 0u32 {
                     drop_current_packet();
                     return;
                 }
@@ -1017,12 +1244,25 @@ fn process_tcp_input(ip_header_len: usize, total_len: usize) void {
                 uip_state.uip_datalen = 0;
                 uip_state.ipid = uip_state.ipid + 1u16;
             } else if uip_state.uip_conns[i].tcpstateflags == UipTcpState.FinWait1 {
+                const expected_seq: u32 = conn_rcv_nxt_u32(uip_state.uip_conns[i].rcv_nxt);
                 const expected_ack: u32 = conn_snd_nxt_u32(uip_state.uip_conns[i].snd_nxt);
                 const ack_matches_fin: bool = (flags & TCP_ACK) != 0 as byte && ackno == expected_ack;
+                if (flags & TCP_FIN) != 0 as byte && (flags & TCP_ACK) == 0 as byte {
+                    drop_current_packet();
+                    return;
+                }
+                if (payload_len > 0 || (flags & TCP_FIN) != 0 as byte) && seqno != expected_seq {
+                    drop_current_packet();
+                    return;
+                }
+                if (flags & TCP_ACK) != 0 as byte && ackno > expected_ack {
+                    drop_current_packet();
+                    return;
+                }
                 if (flags & TCP_FIN) != 0 as byte {
                     const src_ip0: u16 = src_ip.addr[0];
                     const src_ip1: u16 = src_ip.addr[1];
-                    const next_rcv: u32 = ackno + 1u32;
+                    const next_rcv: u32 = expected_seq + 1u32;
                     set_conn_rcv_nxt(i, next_rcv);
                     if ack_matches_fin {
                         uip_state.uip_conns[i].tcpstateflags = UipTcpState.TimeWait;
@@ -1043,6 +1283,19 @@ fn process_tcp_input(ip_header_len: usize, total_len: usize) void {
                 return;
             } else if uip_state.uip_conns[i].tcpstateflags == UipTcpState.FinWait2 {
                 const expected_seq: u32 = conn_rcv_nxt_u32(uip_state.uip_conns[i].rcv_nxt);
+                const expected_ack: u32 = conn_snd_nxt_u32(uip_state.uip_conns[i].snd_nxt);
+                if (flags & TCP_FIN) != 0 as byte && (flags & TCP_ACK) == 0 as byte {
+                    drop_current_packet();
+                    return;
+                }
+                if (payload_len > 0 || (flags & TCP_FIN) != 0 as byte) && seqno != expected_seq {
+                    drop_current_packet();
+                    return;
+                }
+                if (flags & TCP_ACK) != 0 as byte && ackno > expected_ack {
+                    drop_current_packet();
+                    return;
+                }
                 if (flags & TCP_FIN) != 0 as byte && seqno == expected_seq {
                     const next_rcv: u32 = expected_seq + 1u32;
                     const src_ip0: u16 = src_ip.addr[0];
@@ -1057,9 +1310,30 @@ fn process_tcp_input(ip_header_len: usize, total_len: usize) void {
                 drop_current_packet();
                 return;
             } else if uip_state.uip_conns[i].tcpstateflags == UipTcpState.Closing {
+                const expected_seq: u32 = conn_rcv_nxt_u32(uip_state.uip_conns[i].rcv_nxt);
                 const expected_ack: u32 = conn_snd_nxt_u32(uip_state.uip_conns[i].snd_nxt);
                 const expected_rcv: u32 = conn_rcv_nxt_u32(uip_state.uip_conns[i].rcv_nxt);
-                if (flags & TCP_ACK) != 0 as byte && (ackno == expected_ack || ackno == expected_rcv) {
+                if (payload_len > 0 || (flags & TCP_FIN) != 0 as byte) {
+                    drop_current_packet();
+                    return;
+                }
+                if (flags & TCP_SYN) != 0 as byte {
+                    drop_current_packet();
+                    return;
+                }
+                if (flags & TCP_ACK) == 0 as byte {
+                    drop_current_packet();
+                    return;
+                }
+                if seqno != expected_seq {
+                    drop_current_packet();
+                    return;
+                }
+                if ackno > expected_ack {
+                    drop_current_packet();
+                    return;
+                }
+                if ackno == expected_ack || ackno == expected_rcv {
                     uip_state.uip_conns[i].tcpstateflags = UipTcpState.TimeWait;
                     uip_state.uip_conns[i].timer = 0;
                     drop_current_packet();
@@ -1068,9 +1342,30 @@ fn process_tcp_input(ip_header_len: usize, total_len: usize) void {
                 drop_current_packet();
                 return;
             } else if uip_state.uip_conns[i].tcpstateflags == UipTcpState.LastAck {
+                const expected_seq: u32 = conn_rcv_nxt_u32(uip_state.uip_conns[i].rcv_nxt);
                 const expected_ack: u32 = conn_snd_nxt_u32(uip_state.uip_conns[i].snd_nxt);
                 const expected_rcv: u32 = conn_rcv_nxt_u32(uip_state.uip_conns[i].rcv_nxt);
-                if (flags & TCP_ACK) != 0 as byte && (ackno == expected_ack || ackno == expected_rcv) {
+                if (payload_len > 0 || (flags & TCP_FIN) != 0 as byte) {
+                    drop_current_packet();
+                    return;
+                }
+                if (flags & TCP_SYN) != 0 as byte {
+                    drop_current_packet();
+                    return;
+                }
+                if (flags & TCP_ACK) == 0 as byte {
+                    drop_current_packet();
+                    return;
+                }
+                if seqno != expected_seq {
+                    drop_current_packet();
+                    return;
+                }
+                if ackno > expected_ack {
+                    drop_current_packet();
+                    return;
+                }
+                if ackno == expected_ack || ackno == expected_rcv {
                     uip_state.uip_conns[i] = empty_conn();
                     drop_current_packet();
                     return;
@@ -1079,6 +1374,27 @@ fn process_tcp_input(ip_header_len: usize, total_len: usize) void {
                 return;
             } else if uip_state.uip_conns[i].tcpstateflags == UipTcpState.Established {
                 const expected_seq: u32 = conn_rcv_nxt_u32(uip_state.uip_conns[i].rcv_nxt);
+                const expected_ack: u32 = conn_snd_nxt_u32(uip_state.uip_conns[i].snd_nxt);
+                if (flags & TCP_SYN) != 0 as byte {
+                    drop_current_packet();
+                    return;
+                }
+                if (payload_len > 0 || (flags & TCP_FIN) != 0 as byte) && (flags & TCP_ACK) == 0 as byte {
+                    drop_current_packet();
+                    return;
+                }
+                if (flags & TCP_ACK) != 0 as byte && ackno > expected_ack {
+                    drop_current_packet();
+                    return;
+                }
+                if (payload_len > 0 || (flags & TCP_FIN) != 0 as byte) && (flags & TCP_ACK) != 0 as byte && ackno < expected_ack {
+                    drop_current_packet();
+                    return;
+                }
+                if (flags & TCP_ACK) == 0 as byte {
+                    drop_current_packet();
+                    return;
+                }
                 var effective_seq: u32 = expected_seq;
                 if payload_len > 0 || (flags & TCP_FIN) != 0 as byte {
                     effective_seq = seqno;
@@ -1095,6 +1411,11 @@ fn process_tcp_input(ip_header_len: usize, total_len: usize) void {
                 }
 
                 if ack_advance == 0u32 {
+                    uip_state.uip_conns[i].timer = 0;
+                    uip_state.uip_conns[i].nrtx = 0;
+                    if ackno == expected_ack {
+                        uip_state.uip_conns[i].len = 0;
+                    }
                     uip_state.uip_len = 0;
                     return;
                 }
@@ -1102,6 +1423,11 @@ fn process_tcp_input(ip_header_len: usize, total_len: usize) void {
                 const next_rcv: u32 = expected_seq + ack_advance;
                 const src_ip0: u16 = src_ip.addr[0];
                 const src_ip1: u16 = src_ip.addr[1];
+                uip_state.uip_conns[i].timer = 0;
+                uip_state.uip_conns[i].nrtx = 0;
+                if ackno == expected_ack {
+                    uip_state.uip_conns[i].len = 0;
+                }
                 set_conn_rcv_nxt(i, next_rcv);
                 build_tcp_ack_only_reply(i, src_ip0, src_ip1, src_port_be, dst_port_be, next_rcv);
                 uip_state.uip_datalen = payload_len;
@@ -1211,24 +1537,13 @@ fn process_ipv4_input() void {
         }
     }
 
-    uip_state.uip_appdata_offset = UIP_LLH_LEN + ip_header_len;
-
-    if uip_state.uip_buf[ip_offset + 9] == UIP_PROTO_ICMP {
-        process_icmp_echo_request(ip_header_len);
+    const flags_frag_offset: u16 = core_read_be16(ip_offset + 6);
+    if (flags_frag_offset & 0x3fffu16) != 0u16 || (flags_frag_offset & 0x2000u16) != 0u16 {
+        process_ipv4_fragment_input(ip_header_len, total_len);
         return;
     }
 
-    if uip_state.uip_buf[ip_offset + 9] == UIP_PROTO_UDP {
-        process_udp_input(ip_header_len, total_len);
-        return;
-    }
-
-    if uip_state.uip_buf[ip_offset + 9] == UIP_PROTO_TCP {
-        process_tcp_input(ip_header_len, total_len);
-        return;
-    }
-
-    drop_current_packet();
+    process_reassembled_ipv4_input(ip_header_len, total_len, uip_state.uip_buf[ip_offset + 9]);
 }
 
 fn process_data() void {
@@ -1262,6 +1577,12 @@ export fn uip_process(flag: UipProcessFlag) void {
     }
 
     if flag == UipProcessFlag.Timer {
+        if uip_state.reass.active {
+            uip_state.reass.timer = uip_state.reass.timer + 1 as u8;
+            if uip_state.reass.timer >= UIP_REASS_MAXAGE {
+                clear_reass_state();
+            }
+        }
         const index_i32: i32 = uip_state.uip_conn_index;
         if index_i32 < 0 {
             uip_state.uip_len = 0;
@@ -1273,6 +1594,55 @@ export fn uip_process(flag: UipProcessFlag) void {
         }
         const index: usize = index_i32 as usize;
         const state: UipTcpState = uip_state.uip_conns[index].tcpstateflags;
+        if state == UipTcpState.SynSent {
+            uip_state.uip_conns[index].timer = uip_state.uip_conns[index].timer + 1 as u8;
+            if uip_state.uip_conns[index].timer >= UIP_RTO as u8 {
+                uip_state.uip_conns[index].timer = 0;
+                uip_state.uip_conns[index].nrtx = uip_state.uip_conns[index].nrtx + 1 as u8;
+                if uip_state.uip_conns[index].nrtx > UIP_MAXSYNRTX {
+                    uip_state.uip_conns[index] = empty_conn();
+                    uip_state.uip_len = 0;
+                    return;
+                }
+
+                const conn: UipConn = uip_state.uip_conns[index];
+                const ip_offset: usize = UIP_LLH_LEN;
+                const tcp_offset: usize = UIP_LLH_LEN + UIP_IPH_LEN;
+                const total_len: usize = UIP_IPH_LEN + UIP_TCPH_LEN;
+                const seq: u32 = conn_snd_nxt_u32(conn.snd_nxt);
+                const syn_seq: u32 = seq - 1u32;
+
+                uip_state.uip_buf[ip_offset + 0] = 0x45 as byte;
+                uip_state.uip_buf[ip_offset + 1] = 0x00 as byte;
+                core_write_be16(ip_offset + 2, total_len as u16);
+                core_write_be16(ip_offset + 4, uip_state.ipid);
+                core_write_be16(ip_offset + 6, 0u16);
+                uip_state.uip_buf[ip_offset + 8] = UIP_TTL;
+                uip_state.uip_buf[ip_offset + 9] = UIP_PROTO_TCP;
+                core_write_be16(ip_offset + 10, 0u16);
+                core_write_be16(ip_offset + 12, uip_state.uip_hostaddr.addr[0]);
+                core_write_be16(ip_offset + 14, uip_state.uip_hostaddr.addr[1]);
+                core_write_be16(ip_offset + 16, conn.ripaddr.addr[0]);
+                core_write_be16(ip_offset + 18, conn.ripaddr.addr[1]);
+                core_write_be16(ip_offset + 10, ip_checksum(ip_offset, UIP_IPH_LEN));
+
+                core_write_be16(tcp_offset + 0, conn.lport);
+                core_write_be16(tcp_offset + 2, conn.rport);
+                write_tcp_seq(tcp_offset + 4, syn_seq);
+                write_tcp_ack(tcp_offset + 8, 0u32);
+                uip_state.uip_buf[tcp_offset + 12] = 0x50 as byte;
+                uip_state.uip_buf[tcp_offset + 13] = TCP_SYN;
+                core_write_be16(tcp_offset + 14, UIP_RECEIVE_WINDOW as u16);
+                core_write_be16(tcp_offset + 16, 0u16);
+                core_write_be16(tcp_offset + 18, 0u16);
+                uip_state.uip_len = UIP_LLH_LEN + total_len;
+                uip_state.uip_slen = 0;
+                uip_state.ipid = uip_state.ipid + 1u16;
+                return;
+            }
+            uip_state.uip_len = 0;
+            return;
+        }
         if state == UipTcpState.TimeWait {
             uip_state.uip_conns[index].timer = uip_state.uip_conns[index].timer + 1 as u8;
             if uip_state.uip_conns[index].timer >= UIP_TIME_WAIT_TIMEOUT {

@@ -31,6 +31,8 @@ export const UIP_UDP: bool = true;
 export const UIP_ACTIVE_OPEN: bool = true;
 export const UIP_STATISTICS: bool = false;
 export const UIP_LOGGING: bool = false;
+export const UIP_REASSEMBLY: bool = true;
+export const UIP_REASS_MAXAGE: u8 = 40 as u8;
 
 export const UIP_ETHTYPE_IP: u16 = 0x0800u16;
 export const UIP_ETHTYPE_ARP: u16 = 0x0806u16;
