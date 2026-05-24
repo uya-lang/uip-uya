@@ -1,0 +1,117 @@
+use std.testing;
+
+extern fn psock_init(psock: &Psock, buffer: &byte, buffersize: usize) void;
+extern fn psock_datalen(psock: &Psock) u16;
+extern fn psock_newdata(psock: &Psock) bool;
+extern fn psock_generator_send(psock: &Psock, generated_len: u16, mss: u16, rexmit: bool, acked: bool) byte;
+extern fn psock_readbuf(psock: &Psock, input: &byte, input_len: u16) byte;
+extern fn psock_readto(psock: &Psock, endmarker: byte, input: &byte, input_len: u16) byte;
+
+extern const PT_WAITING: i32;
+extern const PT_ENDED: i32;
+
+struct Pt {
+    lc: u16,
+    yielded: bool
+}
+
+struct PsockBuf {
+    ptr: &byte,
+    left: u16
+}
+
+struct Psock {
+    pt: Pt,
+    psockpt: Pt,
+    sendptr: &byte,
+    readptr: &byte,
+    bufptr: &byte,
+    sendlen: u16,
+    readlen: u16,
+    buf: PsockBuf,
+    bufsize: usize,
+    state: byte,
+    lastlen: u16
+}
+
+test "psock_init wires buffer and clears lengths" {
+    var storage: [byte: 8] = [0: 8];
+    var ps: Psock = Psock { pt: Pt { lc: 1u16, yielded: true }, psockpt: Pt { lc: 2u16, yielded: true }, sendptr: null, readptr: null, bufptr: null, sendlen: 9u16, readlen: 8u16, buf: PsockBuf { ptr: null, left: 7u16 }, bufsize: 0, state: 3 as byte, lastlen: 5u16 };
+    psock_init(&ps, &storage[0], 8);
+    try assert_eq_i32(ps.sendlen as i32, 0);
+    try assert_eq_i32(ps.readlen as i32, 0);
+    try assert_eq_i32(ps.buf.left as i32, 8);
+    try assert_eq_i32(ps.bufsize as i32, 8);
+}
+
+test "psock_send waits without ack and ends after ack" {
+    var storage: [byte: 8] = [0: 8];
+    var payload: [byte: 5] = [1, 2, 3, 4, 5];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false }, psockpt: Pt { lc: 0u16, yielded: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    try assert_eq_i32(psock_send(&ps, &payload[0], 5u16, 2u16, false, false) as i32, PT_WAITING);
+    try assert_eq_i32(ps.sendlen as i32, 5);
+    try assert_eq_i32(ps.lastlen as i32, 2);
+    try assert_eq_i32(psock_send(&ps, &payload[0], 5u16, 2u16, false, true) as i32, PT_ENDED);
+    try assert_eq_i32(ps.sendlen as i32, 3);
+}
+
+test "psock_readbuf fills configured buffer" {
+    var storage: [byte: 4] = [0: 4];
+    var input: [byte: 6] = [10, 11, 12, 13, 14, 15];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false }, psockpt: Pt { lc: 0u16, yielded: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 4);
+    try assert_eq_i32(psock_readbuf(&ps, &input[0], 6u16) as i32, PT_ENDED);
+    try assert_eq_i32(storage[0] as i32, 10);
+    try assert_eq_i32(storage[3] as i32, 13);
+    try assert_eq_i32(psock_datalen(&ps) as i32, 4);
+}
+
+test "psock_readto stops at marker" {
+    var storage: [byte: 8] = [0: 8];
+    var input: [byte: 6] = [65, 66, 10, 67, 68, 69];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false }, psockpt: Pt { lc: 0u16, yielded: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    try assert_eq_i32(psock_readto(&ps, 10 as byte, &input[0], 6u16) as i32, PT_ENDED);
+    try assert_eq_i32(psock_datalen(&ps) as i32, 3);
+    try assert_eq_i32(storage[2] as i32, 10);
+}
+
+test "psock_generator_send waits then advances after ack" {
+    var storage: [byte: 8] = [0: 8];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false }, psockpt: Pt { lc: 0u16, yielded: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    try assert_eq_i32(psock_generator_send(&ps, 6u16, 4u16, false, false) as i32, PT_WAITING);
+    try assert_eq_i32(ps.sendlen as i32, 6);
+    try assert_eq_i32(ps.lastlen as i32, 4);
+    try assert_eq_i32(psock_generator_send(&ps, 6u16, 4u16, false, true) as i32, PT_ENDED);
+    try assert_eq_i32(ps.sendlen as i32, 2);
+}
+
+test "psock_send retransmit keeps pending send active" {
+    var storage: [byte: 8] = [0: 8];
+    var payload: [byte: 5] = [1, 2, 3, 4, 5];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false }, psockpt: Pt { lc: 0u16, yielded: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    _ = psock_send(&ps, &payload[0], 5u16, 3u16, false, false);
+    try assert_eq_i32(psock_send(&ps, &payload[0], 5u16, 3u16, true, false) as i32, PT_WAITING);
+    try assert_eq_i32(ps.sendlen as i32, 5);
+    try assert_eq_i32(ps.lastlen as i32, 3);
+}
+
+test "psock_readto without marker remains waiting" {
+    var storage: [byte: 8] = [0: 8];
+    var input: [byte: 4] = [65, 66, 67, 68];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false }, psockpt: Pt { lc: 0u16, yielded: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    try assert_eq_i32(psock_readto(&ps, 10 as byte, &input[0], 4u16) as i32, PT_WAITING);
+    try assert_eq_i32(ps.lastlen as i32, 4);
+}
+
+    var storage: [byte: 4] = [0: 4];
+    var input: [byte: 4] = [1, 2, 3, 4];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false }, psockpt: Pt { lc: 0u16, yielded: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 4);
+    _ = psock_readbuf(&ps, &input[0], 2u16);
+    try assert_eq_bool(psock_newdata(&ps), true);
+}

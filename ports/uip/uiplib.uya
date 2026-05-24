@@ -354,6 +354,107 @@ export struct UipState {
     lastport: u16
 }
 
+export struct UipNeighborAddr {
+    addr: UipEthAddr
+}
+
+export struct UipNeighborEntry {
+    ipaddr: UipIpAddr,
+    addr: UipNeighborAddr,
+    time: byte
+}
+
+export struct UipNeighborState {
+    entries: [UipNeighborEntry: 8]
+}
+
+export const UIP_FW_LOCAL: i32 = 0;
+export const UIP_FW_OK: i32 = 0;
+export const UIP_FW_FORWARDED: i32 = 1;
+export const UIP_FW_ZEROLEN: i32 = 2;
+export const UIP_FW_TOOLARGE: i32 = 3;
+export const UIP_FW_NOROUTE: i32 = 4;
+export const UIP_FW_DROPPED: i32 = 5;
+
+export struct UipFwNetif {
+    ipaddr: UipIpAddr,
+    netmask: UipIpAddr,
+    output_result: byte
+}
+
+export struct UipFwCacheEntry {
+    timer: u16,
+    srcipaddr: UipIpAddr,
+    destipaddr: UipIpAddr,
+    ipid: u16,
+    proto: byte
+}
+
+export struct UipFwState {
+    netifs: [&UipFwNetif: 4],
+    netif_count: usize,
+    default_index: i32,
+    cache: [UipFwCacheEntry: 2]
+}
+
+export struct UipSplitTrace {
+    calls: byte,
+    sent_len0: u16,
+    sent_len1: u16,
+    seq0: [byte: 4],
+    seq1: [byte: 4]
+}
+
+export struct Lc {
+    line: u16
+}
+
+export const PT_WAITING: i32 = 0;
+export const PT_EXITED: i32 = 1;
+export const PT_ENDED: i32 = 2;
+export const PT_YIELDED: i32 = 3;
+
+export struct Pt {
+    lc: u16,
+    yielded: bool
+}
+
+export struct PsockBuf {
+    ptr: &byte,
+    left: u16
+}
+
+export struct Psock {
+    pt: Pt,
+    psockpt: Pt,
+    sendptr: &byte,
+    readptr: &byte,
+    bufptr: &byte,
+    sendlen: u16,
+    readlen: u16,
+    buf: PsockBuf,
+    bufsize: usize,
+    state: byte,
+    lastlen: u16
+}
+
+fn neighbor_addr_copy(dst: &UipNeighborAddr, src: &UipNeighborAddr) void {
+    arp_copy_ethaddr(&dst.addr, &src.addr);
+}
+
+fn neighbor_entry_matches(entry: &UipNeighborEntry, ipaddr: &UipIpAddr) bool {
+    return entry.time != (128 as byte) && uip_ipaddr_cmp(&entry.ipaddr, ipaddr);
+}
+
+fn fw_match_netif(frame: &EthIpHdr, netif: &UipFwNetif) bool {
+    const dest: UipIpAddr = UipIpAddr { words: [frame.destipaddr[0], frame.destipaddr[1]] };
+    return uip_ipaddr_maskcmp(&dest, &netif.ipaddr, &netif.netmask);
+}
+
+fn fw_ipid_from_hdr(hdr: &EthIpHdr) u16 {
+    return (((hdr.ipid[0] as u16) << 8) | (hdr.ipid[1] as u16));
+}
+
 export struct Timer {
     start: u64,
     interval: u64
@@ -2172,6 +2273,347 @@ export fn uip_setethaddr(state: &UipArpState, eaddr: &UipEthAddr) void {
     state.ethaddr.addr[3] = eaddr.addr[3];
     state.ethaddr.addr[4] = eaddr.addr[4];
     state.ethaddr.addr[5] = eaddr.addr[5];
+}
+
+export fn uip_neighbor_init(state: &UipNeighborState) void {
+    var i: usize = 0;
+    while i < @len(state.entries) {
+        state.entries[i].time = 128 as byte;
+        i = i + 1;
+    }
+}
+
+export fn uip_neighbor_periodic(state: &UipNeighborState) void {
+    var i: usize = 0;
+    while i < @len(state.entries) {
+        if state.entries[i].time < (128 as byte) {
+            state.entries[i].time = state.entries[i].time + (1 as byte);
+        }
+        i = i + 1;
+    }
+}
+
+export fn uip_neighbor_add(state: &UipNeighborState, ipaddr: &UipIpAddr, addr: &UipNeighborAddr) void {
+    var oldest: usize = 0;
+    var oldest_time: byte = 0 as byte;
+    var i: usize = 0;
+    while i < @len(state.entries) {
+        if state.entries[i].time == (128 as byte) {
+            oldest = i;
+            break;
+        }
+        if neighbor_entry_matches(&state.entries[i], ipaddr) {
+            oldest = i;
+            break;
+        }
+        if state.entries[i].time > oldest_time {
+            oldest = i;
+            oldest_time = state.entries[i].time;
+        }
+        i = i + 1;
+    }
+    uip_ipaddr_copy(&state.entries[oldest].ipaddr, ipaddr);
+    neighbor_addr_copy(&state.entries[oldest].addr, addr);
+    state.entries[oldest].time = 0 as byte;
+}
+
+export fn uip_neighbor_update(state: &UipNeighborState, ipaddr: &UipIpAddr) void {
+    var i: usize = 0;
+    while i < @len(state.entries) {
+        if neighbor_entry_matches(&state.entries[i], ipaddr) {
+            state.entries[i].time = 0 as byte;
+            return;
+        }
+        i = i + 1;
+    }
+}
+
+export fn uip_neighbor_lookup(state: &UipNeighborState, ipaddr: &UipIpAddr, out: &UipNeighborAddr) bool {
+    var i: usize = 0;
+    while i < @len(state.entries) {
+        if neighbor_entry_matches(&state.entries[i], ipaddr) {
+            neighbor_addr_copy(out, &state.entries[i].addr);
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+export fn uip_fw_init(state: &UipFwState) void {
+    state.netif_count = 0;
+    state.default_index = -1;
+    var i: usize = 0;
+    while i < @len(state.cache) {
+        state.cache[i].timer = 0u16;
+        i = i + 1;
+    }
+}
+
+export fn uip_fw_register(state: &UipFwState, netif: &UipFwNetif) void {
+    if state.netif_count < @len(state.netifs) {
+        state.netifs[state.netif_count] = netif;
+        state.netif_count = state.netif_count + 1;
+    }
+}
+
+export fn uip_fw_default(state: &UipFwState, netif: &UipFwNetif) void {
+    var i: usize = 0;
+    while i < state.netif_count {
+        if state.netifs[i] == netif {
+            state.default_index = (i as! i32).value;
+            return;
+        }
+        i = i + 1;
+    }
+}
+
+export fn uip_fw_output(state: &UipFwState, rt: &UipRuntime) byte {
+    if rt.len == 0u16 {
+        return UIP_FW_ZEROLEN as byte;
+    }
+    var i: usize = 0;
+    while i < state.netif_count {
+        const netif: &UipFwNetif = state.netifs[i];
+        if netif != null && fw_match_netif(&rt.frame.ethip, netif) {
+            return netif.output_result;
+        }
+        i = i + 1;
+    }
+    if state.default_index >= 0 {
+        const index: usize = (state.default_index as! usize).value;
+        if index < state.netif_count && index < @len(state.netifs) {
+            const netif: &UipFwNetif = state.netifs[index];
+            if netif != null {
+                return netif.output_result;
+            }
+        }
+    }
+    return UIP_FW_NOROUTE as byte;
+}
+
+export fn uip_fw_forward(state: &UipFwState, rt: &UipRuntime) byte {
+    if rt.frame.ethip.destipaddr[0] == rt.hostaddr.words[0] && rt.frame.ethip.destipaddr[1] == rt.hostaddr.words[1] {
+        return UIP_FW_LOCAL as byte;
+    }
+    const ipid: u16 = fw_ipid_from_hdr(&rt.frame.ethip);
+    var i: usize = 0;
+    while i < @len(state.cache) {
+        if state.cache[i].timer != 0u16 &&
+            state.cache[i].ipid == ipid &&
+            state.cache[i].proto == rt.frame.ethip.proto &&
+            uip_ipaddr_cmp(&state.cache[i].srcipaddr, &UipIpAddr { words: [rt.frame.ethip.srcipaddr[0], rt.frame.ethip.srcipaddr[1]] }) &&
+            uip_ipaddr_cmp(&state.cache[i].destipaddr, &UipIpAddr { words: [rt.frame.ethip.destipaddr[0], rt.frame.ethip.destipaddr[1]] }) {
+            return UIP_FW_FORWARDED as byte;
+        }
+        i = i + 1;
+    }
+    if rt.frame.ethip.ttl <= (1 as byte) {
+        return UIP_FW_LOCAL as byte;
+    }
+    rt.frame.ethip.ttl = rt.frame.ethip.ttl - (1 as byte);
+    if rt.frame.ethip.ipchksum >= htons(0xfeffu16) {
+        rt.frame.ethip.ipchksum = rt.frame.ethip.ipchksum + htons(0x0100u16) + 1u16;
+    } else {
+        rt.frame.ethip.ipchksum = rt.frame.ethip.ipchksum + htons(0x0100u16);
+    }
+    var slot: usize = 0;
+    if state.cache[0].timer == 0u16 || state.cache[0].timer <= state.cache[1].timer {
+        slot = 0;
+    } else {
+        slot = 1;
+    }
+    state.cache[slot].timer = 20u16;
+    state.cache[slot].ipid = ipid;
+    state.cache[slot].proto = rt.frame.ethip.proto;
+    state.cache[slot].srcipaddr = UipIpAddr { words: [rt.frame.ethip.srcipaddr[0], rt.frame.ethip.srcipaddr[1]] };
+    state.cache[slot].destipaddr = UipIpAddr { words: [rt.frame.ethip.destipaddr[0], rt.frame.ethip.destipaddr[1]] };
+    _ = uip_fw_output(state, rt);
+    return UIP_FW_FORWARDED as byte;
+}
+
+export fn uip_fw_periodic(state: &UipFwState) void {
+    var i: usize = 0;
+    while i < @len(state.cache) {
+        if state.cache[i].timer > 0u16 {
+            state.cache[i].timer = state.cache[i].timer - 1u16;
+        }
+        i = i + 1;
+    }
+}
+
+export fn uip_split_output(rt: &UipRuntime, fw: &UipFwState, trace: &UipSplitTrace) byte {
+    if rt.frame.ethtcp.proto == (UIP_PROTO_TCP as! byte).value && rt.len == ((UIP_BUFSIZE - UIP_LLH_LEN) as! u16).value {
+        const tcplen: u16 = rt.len - ((UIP_TCPIP_HLEN as! u16).value);
+        var len1: u16 = tcplen / 2u16;
+        var len2: u16 = len1;
+        if (len1 + len2) < tcplen {
+            len2 = len2 + 1u16;
+        }
+        rt.len = len1 + ((UIP_TCPIP_HLEN as! u16).value);
+        rt.frame.ethtcp.len[0] = ((rt.len >> 8) as! byte).value;
+        rt.frame.ethtcp.len[1] = ((rt.len & 0xffu16) as! byte).value;
+        trace.calls = 1 as byte;
+        trace.sent_len0 = rt.len;
+        trace.seq0[0] = rt.frame.ethtcp.seqno[0];
+        trace.seq0[1] = rt.frame.ethtcp.seqno[1];
+        trace.seq0[2] = rt.frame.ethtcp.seqno[2];
+        trace.seq0[3] = rt.frame.ethtcp.seqno[3];
+        _ = uip_fw_output(fw, rt);
+        rt.len = len2 + ((UIP_TCPIP_HLEN as! u16).value);
+        rt.frame.ethtcp.len[0] = ((rt.len >> 8) as! byte).value;
+        rt.frame.ethtcp.len[1] = ((rt.len & 0xffu16) as! byte).value;
+        uip_add32(&rt.frame.ethtcp.seqno[0], len1, &rt.acc32[0]);
+        rt.frame.ethtcp.seqno[0] = rt.acc32[0];
+        rt.frame.ethtcp.seqno[1] = rt.acc32[1];
+        rt.frame.ethtcp.seqno[2] = rt.acc32[2];
+        rt.frame.ethtcp.seqno[3] = rt.acc32[3];
+        trace.calls = 2 as byte;
+        trace.sent_len1 = rt.len;
+        trace.seq1[0] = rt.frame.ethtcp.seqno[0];
+        trace.seq1[1] = rt.frame.ethtcp.seqno[1];
+        trace.seq1[2] = rt.frame.ethtcp.seqno[2];
+        trace.seq1[3] = rt.frame.ethtcp.seqno[3];
+        return uip_fw_output(fw, rt);
+    }
+    trace.calls = 1 as byte;
+    trace.sent_len0 = rt.len;
+    trace.seq0[0] = rt.frame.ethtcp.seqno[0];
+    trace.seq0[1] = rt.frame.ethtcp.seqno[1];
+    trace.seq0[2] = rt.frame.ethtcp.seqno[2];
+    trace.seq0[3] = rt.frame.ethtcp.seqno[3];
+    return uip_fw_output(fw, rt);
+}
+
+export fn lc_init(lc: &Lc) void {
+    lc.line = 0u16;
+}
+
+export fn lc_set(lc: &Lc, line: u16) void {
+    lc.line = line;
+}
+
+export fn lc_resume(lc: &Lc) u16 {
+    return lc.line;
+}
+
+export fn lc_end(lc: &Lc) void {
+    lc.line = 0u16;
+}
+
+export fn pt_init(pt: &Pt) void {
+    pt.lc = 0u16;
+    pt.yielded = false;
+}
+
+export fn pt_wait_until(pt: &Pt, condition: bool) byte {
+    pt.lc = 1u16;
+    if !condition {
+        return PT_WAITING as byte;
+    }
+    return PT_YIELDED as byte;
+}
+
+export fn pt_yield(pt: &Pt) byte {
+    pt.yielded = true;
+    pt.lc = 1u16;
+    return PT_YIELDED as byte;
+}
+
+export fn pt_exit(pt: &Pt) byte {
+    pt_init(pt);
+    return PT_EXITED as byte;
+}
+
+export fn pt_end(pt: &Pt) byte {
+    pt_init(pt);
+    return PT_ENDED as byte;
+}
+
+export fn pt_schedule(status: byte) bool {
+    return status == (PT_WAITING as! byte).value;
+}
+
+fn psock_buf_setup(buf: &PsockBuf, bufptr: &byte, bufsize: usize) void {
+    buf.ptr = bufptr;
+    buf.left = (bufsize as! u16).value;
+}
+
+export fn psock_init(psock: &Psock, buffer: &byte, buffersize: usize) void {
+    psock.state = 0 as byte;
+    psock.sendlen = 0u16;
+    psock.readlen = 0u16;
+    psock.lastlen = 0u16;
+    psock.bufptr = buffer;
+    psock.bufsize = buffersize;
+    psock.sendptr = null;
+    psock.readptr = null;
+    psock_buf_setup(&psock.buf, buffer, buffersize);
+    pt_init(&psock.pt);
+    pt_init(&psock.psockpt);
+}
+
+export fn psock_datalen(psock: &Psock) u16 {
+    return ((psock.bufsize as! u16).value) - psock.buf.left;
+}
+
+export fn psock_newdata(psock: &Psock) bool {
+    return psock.readlen > 0u16 || psock_datalen(psock) > 0u16;
+}
+
+export fn psock_send(psock: &Psock, buf: &byte, len: u16, mss: u16, rexmit: bool, acked: bool) byte {
+    if psock.sendlen == 0u16 {
+        psock.sendptr = buf;
+        psock.sendlen = len;
+        if len > mss {
+            psock.lastlen = mss;
+        } else {
+            psock.lastlen = len;
+        }
+        if !acked && !rexmit {
+            return PT_WAITING as byte;
+        }
+    }
+    if acked {
+        if psock.sendlen > psock.lastlen {
+            psock.sendlen = psock.sendlen - psock.lastlen;
+        } else {
+            psock.sendlen = 0u16;
+        }
+        return PT_ENDED as byte;
+    }
+    return PT_WAITING as byte;
+}
+
+export fn psock_readbuf(psock: &Psock, input: &byte, input_len: u16) byte {
+    psock_buf_setup(&psock.buf, psock.bufptr, psock.bufsize);
+    var i: u16 = 0u16;
+    while i < input_len && psock.buf.left > 0u16 {
+        psock.buf.ptr[i as usize] = input[i as usize];
+        i = i + 1u16;
+        psock.buf.left = psock.buf.left - 1u16;
+    }
+    psock.readlen = input_len - i;
+    psock.lastlen = i;
+    return PT_ENDED as byte;
+}
+
+export fn psock_readto(psock: &Psock, endmarker: byte, input: &byte, input_len: u16) byte {
+    psock_buf_setup(&psock.buf, psock.bufptr, psock.bufsize);
+    var i: u16 = 0u16;
+    while i < input_len && psock.buf.left > 0u16 {
+        psock.buf.ptr[i as usize] = input[i as usize];
+        psock.buf.left = psock.buf.left - 1u16;
+        if input[i as usize] == endmarker {
+            psock.readlen = input_len - (i + 1u16);
+            psock.lastlen = i + 1u16;
+            return PT_ENDED as byte;
+        }
+        i = i + 1u16;
+    }
+    psock.readlen = 0u16;
+    psock.lastlen = i;
+    return PT_WAITING as byte;
 }
 
 export fn timer_set(t: &Timer, interval: u64, now: u64) void {

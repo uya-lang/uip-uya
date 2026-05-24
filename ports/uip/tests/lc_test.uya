@@ -1,0 +1,33 @@
+use std.testing;
+
+extern fn lc_init(lc: &Lc) void;
+extern fn lc_set(lc: &Lc, line: u16) void;
+extern fn lc_resume(lc: &Lc) u16;
+extern fn lc_end(lc: &Lc) void;
+
+struct Lc {
+    line: u16
+}
+
+test "lc_init clears continuation line" {
+    var lc: Lc = Lc { line: 17u16 };
+    lc_init(&lc);
+    try assert_eq_i32(lc.line as i32, 0);
+}
+
+test "lc_set stores resume line" {
+    var lc: Lc = Lc { line: 0u16 };
+    lc_set(&lc, 42u16);
+    try assert_eq_i32(lc.line as i32, 42);
+}
+
+test "lc_resume returns stored line" {
+    var lc: Lc = Lc { line: 99u16 };
+    try assert_eq_i32(lc_resume(&lc) as i32, 99);
+}
+
+test "lc_end resets continuation state" {
+    var lc: Lc = Lc { line: 7u16 };
+    lc_end(&lc);
+    try assert_eq_i32(lc.line as i32, 0);
+}

@@ -1,0 +1,95 @@
+use std.testing;
+
+extern fn uip_ipaddr(a: byte, b: byte, c: byte, d: byte) UipIpAddr;
+extern fn uip_split_output(rt: &UipRuntime, fw: &UipFwState, trace: &UipSplitTrace) byte;
+extern fn htons(val: u16) u16;
+
+extern const UIP_PROTO_TCP: i32;
+extern const UIP_BUFSIZE: i32;
+extern const UIP_LLH_LEN: i32;
+extern const UIP_TCPIP_HLEN: i32;
+extern const UIP_FW_OK: i32;
+
+struct UipIpAddr { words: [u16: 2] }
+struct UipEthAddr { addr: [byte: 6] }
+struct UipEthHdr { dest: UipEthAddr, src: UipEthAddr, type: u16 }
+struct EthIpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2] }
+struct EthTcpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, seqno: [byte: 4], ackno: [byte: 4], tcpoffset: byte, flags: byte, wnd: [byte: 2], tcpchksum: u16, urgp: u16, optdata: [byte: 4] }
+struct EthUdpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, udplen: u16, udpchksum: u16 }
+struct ArpHdr { ethhdr: UipEthHdr, hwtype: u16, protocol: u16, hwlen: byte, protolen: byte, opcode: u16, shwaddr: UipEthAddr, sipaddr: [u16: 2], dhwaddr: UipEthAddr, dipaddr: [u16: 2] }
+struct UipFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
+struct UipRuntime { frame: UipFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, len: u16, slen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, acc32: [byte: 4], ipid: u16, iss: [byte: 4] }
+struct UipFwNetif { ipaddr: UipIpAddr, netmask: UipIpAddr, output_result: byte }
+struct UipFwCacheEntry { timer: u16, srcipaddr: UipIpAddr, destipaddr: UipIpAddr, ipid: u16, proto: byte }
+struct UipFwState { netifs: [&UipFwNetif: 4], netif_count: usize, default_index: i32, cache: [UipFwCacheEntry: 2] }
+struct UipSplitTrace { calls: byte, sent_len0: u16, sent_len1: u16, seq0: [byte: 4], seq1: [byte: 4] }
+
+fn make_runtime() UipRuntime {
+    return UipRuntime {
+        frame: UipFrame {
+            ethip: EthIpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16] },
+            ethtcp: EthTcpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, seqno: [0 as byte,0 as byte,0 as byte,0 as byte], ackno: [0 as byte,0 as byte,0 as byte,0 as byte], tcpoffset: 0x50 as byte, flags: 0 as byte, wnd: [0 as byte,0 as byte], tcpchksum: 0u16, urgp: 0u16, optdata: [0 as byte,0 as byte,0 as byte,0 as byte] },
+            ethudp: EthUdpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, udplen: 0u16, udpchksum: 0u16 },
+            arp: ArpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, hwtype: 0u16, protocol: 0u16, hwlen: 0 as byte, protolen: 0 as byte, opcode: 0u16, shwaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, sipaddr: [0u16,0u16], dhwaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, dipaddr: [0u16,0u16] }
+        },
+        hostaddr: UipIpAddr { words: [0u16, 0u16] },
+        draddr: UipIpAddr { words: [0u16, 0u16] },
+        netmask: UipIpAddr { words: [0u16, 0u16] },
+        appdata: null,
+        sappdata: null,
+        len: 0u16,
+        slen: 0u16,
+        flags: 0 as byte,
+        current_conn: -1,
+        current_udp_conn: -1,
+        acc32: [0 as byte,0 as byte,0 as byte,0 as byte],
+        ipid: 0u16,
+        iss: [0 as byte,0 as byte,0 as byte,0 as byte]
+    };
+}
+
+fn make_fw(netif: &UipFwNetif) UipFwState {
+    var state: UipFwState = UipFwState {
+        netifs: [null: 4],
+        netif_count: 1,
+        default_index: 0,
+        cache: [UipFwCacheEntry { timer: 0u16, srcipaddr: UipIpAddr { words: [0u16,0u16] }, destipaddr: UipIpAddr { words: [0u16,0u16] }, ipid: 0u16, proto: 0 as byte }: 2]
+    };
+    state.netifs[0] = netif;
+    return state;
+}
+
+test "uip_split_output leaves non max segment untouched" {
+    var rt: UipRuntime = make_runtime();
+    var netif: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value };
+    var fw: UipFwState = make_fw(&netif);
+    var trace: UipSplitTrace = UipSplitTrace { calls: 0 as byte, sent_len0: 0u16, sent_len1: 0u16, seq0: [0 as byte,0 as byte,0 as byte,0 as byte], seq1: [0 as byte,0 as byte,0 as byte,0 as byte] };
+    rt.len = 100u16;
+    rt.frame.ethtcp.proto = (UIP_PROTO_TCP as! byte).value;
+    const result: byte = uip_split_output(&rt, &fw, &trace);
+    try assert_eq_i32(result as i32, UIP_FW_OK);
+    try assert_eq_i32(trace.calls as i32, 1);
+    try assert_eq_i32(trace.sent_len0 as i32, 100);
+}
+
+test "uip_split_output splits max sized tcp segment into two sends" {
+    var rt: UipRuntime = make_runtime();
+    var netif: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value };
+    var fw: UipFwState = make_fw(&netif);
+    var trace: UipSplitTrace = UipSplitTrace { calls: 0 as byte, sent_len0: 0u16, sent_len1: 0u16, seq0: [0 as byte,0 as byte,0 as byte,0 as byte], seq1: [0 as byte,0 as byte,0 as byte,0 as byte] };
+    rt.len = ((UIP_BUFSIZE - UIP_LLH_LEN) as! u16).value;
+    rt.frame.ethtcp.proto = (UIP_PROTO_TCP as! byte).value;
+    rt.frame.ethtcp.seqno[0] = 0 as byte;
+    rt.frame.ethtcp.seqno[1] = 0 as byte;
+    rt.frame.ethtcp.seqno[2] = 0 as byte;
+    rt.frame.ethtcp.seqno[3] = 10 as byte;
+    rt.frame.ethtcp.ipchksum = htons(0x1234u16);
+    rt.frame.ethtcp.tcpchksum = htons(0x5678u16);
+    const result: byte = uip_split_output(&rt, &fw, &trace);
+    try assert_eq_i32(result as i32, UIP_FW_OK);
+    try assert_eq_i32(trace.calls as i32, 2);
+    try assert_eq_i32(trace.sent_len0 as i32, 213);
+    try assert_eq_i32(trace.sent_len1 as i32, 213);
+    try assert_eq_i32(trace.seq0[3] as i32, 10);
+    try assert_eq_i32(trace.seq1[3] as i32, 183);
+}
