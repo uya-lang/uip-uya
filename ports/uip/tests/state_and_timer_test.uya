@@ -1,0 +1,383 @@
+use std.testing;
+
+extern fn timer_set(t: &Timer, interval: u64, now: u64) void;
+extern fn timer_reset(t: &Timer) void;
+extern fn timer_restart(t: &Timer, now: u64) void;
+extern fn timer_expired(t: &Timer, now: u64) bool;
+extern fn uip_init(state: &UipState) void;
+extern fn uip_connect(state: &UipState, ripaddr: &UipIpAddr, rport: u16, iss0: byte, iss1: byte, iss2: byte, iss3: byte, out_index: &i32) bool;
+extern fn uip_udp_new(state: &UipState, ripaddr: &UipIpAddr, rport: u16, out_index: &i32) bool;
+extern fn uip_listen(state: &UipState, port: u16) void;
+extern fn uip_unlisten(state: &UipState, port: u16) void;
+extern fn uip_conn_active(state: &UipState, conn: usize) bool;
+extern fn uip_outstanding(conn: &UipConn) u16;
+extern fn uip_udp_remove(conn: &UipUdpConn) void;
+extern fn uip_udp_bind(conn: &UipUdpConn, port: u16) void;
+extern fn htons(val: u16) u16;
+extern fn ntohs(val: u16) u16;
+extern fn uip_ipaddr(a: byte, b: byte, c: byte, d: byte) UipIpAddr;
+
+extern const UIP_ESTABLISHED: i32;
+extern const UIP_SYN_SENT: i32;
+extern const UIP_TIME_WAIT: i32;
+extern const UIP_CLOSED: i32;
+extern const UIP_TCP_MSS: i32;
+extern const UIP_TTL: i32;
+extern const UIP_RTO: i32;
+
+struct Timer {
+    start: u64,
+    interval: u64
+}
+
+struct UipIpAddr {
+    words: [u16: 2]
+}
+
+struct UipConn {
+    ripaddr: UipIpAddr,
+    lport: u16,
+    rport: u16,
+    rcv_nxt: [byte: 4],
+    snd_nxt: [byte: 4],
+    len: u16,
+    mss: u16,
+    initialmss: u16,
+    sa: byte,
+    sv: byte,
+    rto: byte,
+    tcpstateflags: byte,
+    timer: byte,
+    nrtx: byte,
+    appstate: u16
+}
+
+struct UipUdpConn {
+    ripaddr: UipIpAddr,
+    lport: u16,
+    rport: u16,
+    ttl: byte,
+    appstate: u16
+}
+
+struct UipState {
+    listenports: [u16: 20],
+    conns: [UipConn: 10],
+    udp_conns: [UipUdpConn: 10],
+    acc32: [byte: 4],
+    flags: byte,
+    len: u16,
+    lastport: u16
+}
+
+test "timer_set and timer_expired mirror uip semantics" {
+    var t: Timer = Timer{ start: 0, interval: 0 };
+    timer_set(&t, 50, 100);
+    try assert_eq_u64(t.start, 100u64);
+    try assert_eq_u64(t.interval, 50u64);
+    try assert_eq_bool(timer_expired(&t, 149), false);
+    try assert_eq_bool(timer_expired(&t, 150), true);
+}
+
+test "timer_reset advances by fixed interval" {
+    var t: Timer = Timer{ start: 100, interval: 50 };
+    timer_reset(&t);
+    try assert_eq_u64(t.start, 150u64);
+    try assert_eq_u64(t.interval, 50u64);
+}
+
+test "timer_restart uses current time" {
+    var t: Timer = Timer{ start: 100, interval: 50 };
+    timer_restart(&t, 230);
+    try assert_eq_u64(t.start, 230u64);
+    try assert_eq_u64(t.interval, 50u64);
+    try assert_eq_bool(timer_expired(&t, 279), false);
+    try assert_eq_bool(timer_expired(&t, 280), true);
+}
+
+test "uip_init clears listen ports and closes all tcp conns" {
+    var state: UipState = UipState {
+        listenports: [0u16: 20],
+        conns: [UipConn {
+            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            lport: 0u16,
+            rport: 0u16,
+            rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+            snd_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+            len: 0u16,
+            mss: 0u16,
+            initialmss: 0u16,
+            sa: 0 as byte,
+            sv: 0 as byte,
+            rto: 0 as byte,
+            tcpstateflags: 0 as byte,
+            timer: 0 as byte,
+            nrtx: 0 as byte,
+            appstate: 0u16
+        }: 10],
+        udp_conns: [UipUdpConn {
+            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            lport: 0u16,
+            rport: 0u16,
+            ttl: 0 as byte,
+            appstate: 0u16
+        }: 10],
+        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+        flags: 0 as byte,
+        len: 0u16,
+        lastport: 0u16
+    };
+    state.listenports[0] = 80u16;
+    state.listenports[19] = 1234u16;
+    state.conns[0].tcpstateflags = UIP_ESTABLISHED as! byte catch |_| { 0 as byte; };
+    state.conns[9].tcpstateflags = UIP_TIME_WAIT as! byte catch |_| { 0 as byte; };
+    state.udp_conns[0].lport = 99u16;
+    state.udp_conns[9].lport = 100u16;
+    state.lastport = 5555u16;
+    uip_init(&state);
+    try assert_eq_i32(state.listenports[0] as i32, 0);
+    try assert_eq_i32(state.listenports[19] as i32, 0);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_CLOSED);
+    try assert_eq_i32(state.conns[9].tcpstateflags as i32, UIP_CLOSED);
+    try assert_eq_i32(state.udp_conns[0].lport as i32, 0);
+    try assert_eq_i32(state.udp_conns[9].lport as i32, 0);
+    try assert_eq_i32(state.lastport as i32, 1024);
+}
+
+test "uip_listen stores first free port and uip_unlisten removes it" {
+    var state: UipState = UipState {
+        listenports: [0u16: 20],
+        conns: [UipConn {
+            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            lport: 0u16,
+            rport: 0u16,
+            rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+            snd_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+            len: 0u16,
+            mss: 0u16,
+            initialmss: 0u16,
+            sa: 0 as byte,
+            sv: 0 as byte,
+            rto: 0 as byte,
+            tcpstateflags: 0 as byte,
+            timer: 0 as byte,
+            nrtx: 0 as byte,
+            appstate: 0u16
+        }: 10],
+        udp_conns: [UipUdpConn {
+            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            lport: 0u16,
+            rport: 0u16,
+            ttl: 0 as byte,
+            appstate: 0u16
+        }: 10],
+        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+        flags: 0 as byte,
+        len: 0u16,
+        lastport: 0u16
+    };
+    uip_listen(&state, htons(80u16));
+    uip_listen(&state, htons(23u16));
+    try assert_eq_i32(state.listenports[0] as i32, htons(80u16) as i32);
+    try assert_eq_i32(state.listenports[1] as i32, htons(23u16) as i32);
+    uip_unlisten(&state, htons(80u16));
+    try assert_eq_i32(state.listenports[0] as i32, 0);
+    try assert_eq_i32(state.listenports[1] as i32, htons(23u16) as i32);
+}
+
+test "uip_conn_active and uip_outstanding reflect connection state" {
+    var state: UipState = UipState {
+        listenports: [0u16: 20],
+        conns: [UipConn {
+            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            lport: 0u16,
+            rport: 0u16,
+            rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+            snd_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+            len: 0u16,
+            mss: 0u16,
+            initialmss: 0u16,
+            sa: 0 as byte,
+            sv: 0 as byte,
+            rto: 0 as byte,
+            tcpstateflags: 0 as byte,
+            timer: 0 as byte,
+            nrtx: 0 as byte,
+            appstate: 0u16
+        }: 10],
+        udp_conns: [UipUdpConn {
+            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            lport: 0u16,
+            rport: 0u16,
+            ttl: 0 as byte,
+            appstate: 0u16
+        }: 10],
+        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+        flags: 0 as byte,
+        len: 0u16,
+        lastport: 0u16
+    };
+    state.conns[2].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    state.conns[2].len = 7u16;
+    try assert_eq_bool(uip_conn_active(&state, 2usize), true);
+    try assert_eq_i32(uip_outstanding(&state.conns[2]) as i32, 7);
+    try assert_eq_bool(uip_conn_active(&state, 3usize), false);
+}
+
+test "uip_udp_bind and remove update local port" {
+    var conn: UipUdpConn = UipUdpConn {
+        ripaddr: UipIpAddr { words: [0u16, 0u16] },
+        lport: 0u16,
+        rport: 0u16,
+        ttl: 0 as byte,
+        appstate: 0u16
+    };
+    uip_udp_bind(&conn, htons(12345u16));
+    try assert_eq_i32(conn.lport as i32, htons(12345u16) as i32);
+    uip_udp_remove(&conn);
+    try assert_eq_i32(conn.lport as i32, 0);
+}
+
+test "uip_connect allocates closed slot and initializes syn state" {
+    var state: UipState = UipState {
+        listenports: [0u16: 20],
+        conns: [UipConn {
+            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            lport: 0u16,
+            rport: 0u16,
+            rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+            snd_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+            len: 0u16,
+            mss: 0u16,
+            initialmss: 0u16,
+            sa: 0 as byte,
+            sv: 0 as byte,
+            rto: 0 as byte,
+            tcpstateflags: 0 as byte,
+            timer: 0 as byte,
+            nrtx: 0 as byte,
+            appstate: 0u16
+        }: 10],
+        udp_conns: [UipUdpConn {
+            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            lport: 0u16,
+            rport: 0u16,
+            ttl: 0 as byte,
+            appstate: 0u16
+        }: 10],
+        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+        flags: 0 as byte,
+        len: 0u16,
+        lastport: 0u16
+    };
+    const rip: UipIpAddr = uip_ipaddr(192, 168, 0, 10);
+    var index: i32 = -1;
+    const ok: bool = uip_connect(&state, &rip, htons(80u16), 1 as byte, 2 as byte, 3 as byte, 4 as byte, &index);
+    try assert_eq_bool(ok, true);
+    try assert_eq_i32(index, 0);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_SYN_SENT);
+    try assert_eq_i32(state.conns[0].snd_nxt[0] as i32, 1);
+    try assert_eq_i32(state.conns[0].snd_nxt[1] as i32, 2);
+    try assert_eq_i32(state.conns[0].snd_nxt[2] as i32, 3);
+    try assert_eq_i32(state.conns[0].snd_nxt[3] as i32, 4);
+    try assert_eq_i32(state.conns[0].mss as i32, UIP_TCP_MSS);
+    try assert_eq_i32(state.conns[0].initialmss as i32, UIP_TCP_MSS);
+    try assert_eq_i32(state.conns[0].len as i32, 1);
+    try assert_eq_i32(state.conns[0].timer as i32, 1);
+    try assert_eq_i32(state.conns[0].rto as i32, UIP_RTO);
+    try assert_eq_i32(state.conns[0].sv as i32, 16);
+    try assert_eq_i32(ntohs(state.conns[0].lport) as i32, 1);
+    try assert_eq_i32(state.conns[0].rport as i32, htons(80u16) as i32);
+}
+
+test "uip_connect reuses oldest time wait when no closed slot exists" {
+    var state: UipState = UipState {
+        listenports: [0u16: 20],
+        conns: [UipConn {
+            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            lport: 0u16,
+            rport: 0u16,
+            rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+            snd_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+            len: 0u16,
+            mss: 0u16,
+            initialmss: 0u16,
+            sa: 0 as byte,
+            sv: 0 as byte,
+            rto: 0 as byte,
+            tcpstateflags: 0 as byte,
+            timer: 0 as byte,
+            nrtx: 0 as byte,
+            appstate: 0u16
+        }: 10],
+        udp_conns: [UipUdpConn {
+            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            lport: 0u16,
+            rport: 0u16,
+            ttl: 0 as byte,
+            appstate: 0u16
+        }: 10],
+        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+        flags: 0 as byte,
+        len: 0u16,
+        lastport: 0u16
+    };
+    var i: usize = 0;
+    while i < 10 {
+        state.conns[i].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+        state.conns[i].timer = 1 as byte;
+        i = i + 1;
+    }
+    state.conns[3].tcpstateflags = (UIP_TIME_WAIT as! byte).value;
+    state.conns[3].timer = 9 as byte;
+    state.conns[7].tcpstateflags = (UIP_TIME_WAIT as! byte).value;
+    state.conns[7].timer = 20 as byte;
+    const rip: UipIpAddr = uip_ipaddr(10, 0, 0, 7);
+    var index: i32 = -1;
+    const ok: bool = uip_connect(&state, &rip, htons(23u16), 9 as byte, 8 as byte, 7 as byte, 6 as byte, &index);
+    try assert_eq_bool(ok, true);
+    try assert_eq_i32(index, 7);
+    try assert_eq_i32(state.conns[7].tcpstateflags as i32, UIP_SYN_SENT);
+}
+
+test "uip_udp_new allocates slot and fills ttl" {
+    var state: UipState = UipState {
+        listenports: [0u16: 20],
+        conns: [UipConn {
+            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            lport: 0u16,
+            rport: 0u16,
+            rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+            snd_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+            len: 0u16,
+            mss: 0u16,
+            initialmss: 0u16,
+            sa: 0 as byte,
+            sv: 0 as byte,
+            rto: 0 as byte,
+            tcpstateflags: 0 as byte,
+            timer: 0 as byte,
+            nrtx: 0 as byte,
+            appstate: 0u16
+        }: 10],
+        udp_conns: [UipUdpConn {
+            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            lport: 0u16,
+            rport: 0u16,
+            ttl: 0 as byte,
+            appstate: 0u16
+        }: 10],
+        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+        flags: 0 as byte,
+        len: 0u16,
+        lastport: 0u16
+    };
+    const rip: UipIpAddr = uip_ipaddr(1, 2, 3, 4);
+    var index: i32 = -1;
+    const ok: bool = uip_udp_new(&state, &rip, htons(1234u16), &index);
+    try assert_eq_bool(ok, true);
+    try assert_eq_i32(index, 0);
+    try assert_eq_i32(ntohs(state.udp_conns[0].lport) as i32, 1);
+    try assert_eq_i32(state.udp_conns[0].rport as i32, htons(1234u16) as i32);
+    try assert_eq_i32(state.udp_conns[0].ttl as i32, UIP_TTL);
+}

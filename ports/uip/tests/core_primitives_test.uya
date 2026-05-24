@@ -1,0 +1,239 @@
+use std.testing;
+
+extern fn htons(val: u16) u16;
+extern fn ntohs(val: u16) u16;
+extern fn uip_ipaddr(a: byte, b: byte, c: byte, d: byte) UipIpAddr;
+extern fn uip_ipaddr_copy(dest: &UipIpAddr, src: &UipIpAddr) void;
+extern fn uip_ipaddr_cmp(addr1: &UipIpAddr, addr2: &UipIpAddr) bool;
+extern fn uip_ipaddr_maskcmp(addr1: &UipIpAddr, addr2: &UipIpAddr, mask: &UipIpAddr) bool;
+extern fn uip_ipaddr_mask(dest: &UipIpAddr, src: &UipIpAddr, mask: &UipIpAddr) void;
+extern fn uip_ipaddr1(addr: &UipIpAddr) byte;
+extern fn uip_ipaddr2(addr: &UipIpAddr) byte;
+extern fn uip_ipaddr3(addr: &UipIpAddr) byte;
+extern fn uip_ipaddr4(addr: &UipIpAddr) byte;
+extern fn uip_add32(op32: &byte, op16: u16, out_acc32: &byte) void;
+extern fn uip_chksum(data: &byte, len: u16) u16;
+extern fn uip_ipchksum(buf: &byte) u16;
+extern fn uip_upper_layer_chksum(buf: &byte, proto: byte) u16;
+extern fn uip_tcpchksum(buf: &byte) u16;
+extern fn uip_udpchksum(buf: &byte) u16;
+extern fn uiplib_ipaddrconv(addrstr: &const byte, ipaddr: &byte) byte;
+
+extern const UIP_TTL: i32;
+extern const UIP_BUFSIZE: i32;
+extern const UIP_LLH_LEN: i32;
+extern const UIP_IPH_LEN: i32;
+extern const UIP_UDPH_LEN: i32;
+extern const UIP_TCPH_LEN: i32;
+extern const UIP_IPUDPH_LEN: i32;
+extern const UIP_IPTCPH_LEN: i32;
+extern const UIP_TCPIP_HLEN: i32;
+extern const UIP_TCP_MSS: i32;
+extern const UIP_RECEIVE_WINDOW: i32;
+extern const UIP_BYTE_ORDER: i32;
+extern const UIP_CONNS: i32;
+extern const UIP_LISTENPORTS: i32;
+extern const UIP_ACKDATA: i32;
+extern const UIP_NEWDATA: i32;
+extern const UIP_REXMIT: i32;
+extern const UIP_POLL: i32;
+extern const UIP_CLOSE: i32;
+extern const UIP_ABORT: i32;
+extern const UIP_CONNECTED: i32;
+extern const UIP_TIMEDOUT: i32;
+extern const UIP_CLOSED: i32;
+extern const UIP_ESTABLISHED: i32;
+extern const UIP_TIME_WAIT: i32;
+extern const UIP_STOPPED: i32;
+
+struct UipIpAddr {
+    words: [u16: 2]
+}
+
+test "uiplib_ipaddrconv basic parses dotted quad" {
+    var ip: [byte: 4] = [];
+    const ok: byte = uiplib_ipaddrconv("192.168.0.2", &ip[0]);
+    try assert_eq_i32(ok as i32, 1);
+    try assert_eq_i32(ip[0] as i32, 192);
+    try assert_eq_i32(ip[1] as i32, 168);
+    try assert_eq_i32(ip[2] as i32, 0);
+    try assert_eq_i32(ip[3] as i32, 2);
+}
+
+test "uiplib_ipaddrconv basic rejects non digit segment" {
+    var ip: [byte: 4] = [];
+    const ok: byte = uiplib_ipaddrconv("10.a.0.1", &ip[0]);
+    try assert_eq_i32(ok as i32, 0);
+}
+
+test "uiplib_ipaddrconv basic rejects overlong segment" {
+    var ip: [byte: 4] = [];
+    const ok: byte = uiplib_ipaddrconv("12345.0.0.1", &ip[0]);
+    try assert_eq_i32(ok as i32, 0);
+}
+
+test "uip_ipaddr packs octets into words" {
+    const addr: UipIpAddr = uip_ipaddr(192, 168, 0, 2);
+    try assert_eq_i32(uip_ipaddr1(&addr) as i32, 192);
+    try assert_eq_i32(uip_ipaddr2(&addr) as i32, 168);
+    try assert_eq_i32(uip_ipaddr3(&addr) as i32, 0);
+    try assert_eq_i32(uip_ipaddr4(&addr) as i32, 2);
+}
+
+test "uip_ipaddr_copy copies both words" {
+    const src: UipIpAddr = uip_ipaddr(10, 0, 0, 1);
+    var dst: UipIpAddr = UipIpAddr{ words: [0u16, 0u16] };
+    uip_ipaddr_copy(&dst, &src);
+    try assert_eq_i32(uip_ipaddr1(&dst) as i32, 10);
+    try assert_eq_i32(uip_ipaddr2(&dst) as i32, 0);
+    try assert_eq_i32(uip_ipaddr3(&dst) as i32, 0);
+    try assert_eq_i32(uip_ipaddr4(&dst) as i32, 1);
+}
+
+test "uip_ipaddr_maskcmp respects netmask" {
+    const addr1: UipIpAddr = uip_ipaddr(192, 168, 1, 2);
+    const addr2: UipIpAddr = uip_ipaddr(192, 168, 1, 99);
+    const mask: UipIpAddr = uip_ipaddr(255, 255, 255, 0);
+    try assert_eq_bool(uip_ipaddr_maskcmp(&addr1, &addr2, &mask), true);
+}
+
+test "uip_ipaddr_mask clears host bits" {
+    const src: UipIpAddr = uip_ipaddr(192, 168, 1, 42);
+    const mask: UipIpAddr = uip_ipaddr(255, 255, 255, 0);
+    var dst: UipIpAddr = UipIpAddr{ words: [0u16, 0u16] };
+    uip_ipaddr_mask(&dst, &src, &mask);
+    try assert_eq_i32(uip_ipaddr1(&dst) as i32, 192);
+    try assert_eq_i32(uip_ipaddr2(&dst) as i32, 168);
+    try assert_eq_i32(uip_ipaddr3(&dst) as i32, 1);
+    try assert_eq_i32(uip_ipaddr4(&dst) as i32, 0);
+}
+
+test "htons and ntohs swap bytes on little endian default" {
+    try assert_eq_i32(htons(0x1234u16) as i32, 0x3412);
+    try assert_eq_i32(ntohs(0x3412u16) as i32, 0x1234);
+}
+
+test "uip_add32 adds host order u16 into network order u32" {
+    var op32: [byte: 4] = [0, 0, 0, 1];
+    var acc: [byte: 4] = [0, 0, 0, 0];
+    uip_add32(&op32[0], 0x0203u16, &acc[0]);
+    try assert_eq_i32(acc[0] as i32, 0);
+    try assert_eq_i32(acc[1] as i32, 0);
+    try assert_eq_i32(acc[2] as i32, 2);
+    try assert_eq_i32(acc[3] as i32, 4);
+}
+
+test "uip_add32 carries across all bytes" {
+    var op32: [byte: 4] = [0, 0, 255, 255];
+    var acc: [byte: 4] = [0, 0, 0, 0];
+    uip_add32(&op32[0], 1u16, &acc[0]);
+    try assert_eq_i32(acc[0] as i32, 0);
+    try assert_eq_i32(acc[1] as i32, 1);
+    try assert_eq_i32(acc[2] as i32, 0);
+    try assert_eq_i32(acc[3] as i32, 0);
+}
+
+test "uip_chksum matches RFC1071 style example" {
+    var data: [byte: 4] = [1, 2, 3, 4];
+    try assert_eq_i32(uip_chksum(&data[0], 4u16) as i32, 0x0604);
+}
+
+test "uip_ipchksum returns 0xffff for zero header sum" {
+    var buf: [byte: 64] = [0: 64];
+    try assert_eq_i32(uip_ipchksum(&buf[0]) as i32, 0xFFFF);
+}
+
+test "uip_upper_layer_chksum covers pseudo header and payload" {
+    var buf: [byte: 64] = [0: 64];
+    const base: usize = UIP_LLH_LEN as usize;
+    const ipoff: usize = (UIP_LLH_LEN + UIP_IPH_LEN) as usize;
+    buf[base + 2] = 0;
+    buf[base + 3] = 24;
+    buf[base + 12] = 1;
+    buf[base + 13] = 2;
+    buf[base + 14] = 3;
+    buf[base + 15] = 4;
+    buf[base + 16] = 5;
+    buf[base + 17] = 6;
+    buf[base + 18] = 7;
+    buf[base + 19] = 8;
+    buf[ipoff + 0] = 0x11 as byte;
+    buf[ipoff + 1] = 0x22 as byte;
+    buf[ipoff + 2] = 0x33 as byte;
+    buf[ipoff + 3] = 0x44 as byte;
+    try assert_eq_i32(uip_upper_layer_chksum(&buf[0], 6) as i32, 30280);
+}
+
+test "uip_tcpchksum delegates to upper layer checksum" {
+    var buf: [byte: 64] = [0: 64];
+    const base: usize = UIP_LLH_LEN as usize;
+    const ipoff: usize = (UIP_LLH_LEN + UIP_IPH_LEN) as usize;
+    buf[base + 2] = 0;
+    buf[base + 3] = 24;
+    buf[base + 12] = 1;
+    buf[base + 13] = 2;
+    buf[base + 14] = 3;
+    buf[base + 15] = 4;
+    buf[base + 16] = 5;
+    buf[base + 17] = 6;
+    buf[base + 18] = 7;
+    buf[base + 19] = 8;
+    buf[ipoff + 0] = 0x11 as byte;
+    buf[ipoff + 1] = 0x22 as byte;
+    buf[ipoff + 2] = 0x33 as byte;
+    buf[ipoff + 3] = 0x44 as byte;
+    try assert_eq_i32(uip_tcpchksum(&buf[0]) as i32, 30280);
+}
+
+test "uip_udpchksum uses UDP protocol number" {
+    var buf: [byte: 64] = [0: 64];
+    const base: usize = UIP_LLH_LEN as usize;
+    const ipoff: usize = (UIP_LLH_LEN + UIP_IPH_LEN) as usize;
+    buf[base + 2] = 0;
+    buf[base + 3] = 24;
+    buf[base + 12] = 1;
+    buf[base + 13] = 2;
+    buf[base + 14] = 3;
+    buf[base + 15] = 4;
+    buf[base + 16] = 5;
+    buf[base + 17] = 6;
+    buf[base + 18] = 7;
+    buf[base + 19] = 8;
+    buf[ipoff + 0] = 0x11 as byte;
+    buf[ipoff + 1] = 0x22 as byte;
+    buf[ipoff + 2] = 0x33 as byte;
+    buf[ipoff + 3] = 0x44 as byte;
+    try assert_eq_i32(uip_udpchksum(&buf[0]) as i32, 33096);
+}
+
+test "uip protocol and state constants match header defaults" {
+    try assert_eq_i32(UIP_ACKDATA, 1);
+    try assert_eq_i32(UIP_NEWDATA, 2);
+    try assert_eq_i32(UIP_REXMIT, 4);
+    try assert_eq_i32(UIP_POLL, 8);
+    try assert_eq_i32(UIP_CLOSE, 16);
+    try assert_eq_i32(UIP_ABORT, 32);
+    try assert_eq_i32(UIP_CONNECTED, 64);
+    try assert_eq_i32(UIP_TIMEDOUT, 128);
+    try assert_eq_i32(UIP_CLOSED, 0);
+    try assert_eq_i32(UIP_ESTABLISHED, 3);
+    try assert_eq_i32(UIP_TIME_WAIT, 7);
+    try assert_eq_i32(UIP_STOPPED, 16);
+}
+
+test "uip core constants match defaults" {
+    try assert_eq_i32(UIP_TTL, 64);
+    try assert_eq_i32(UIP_BUFSIZE, 400);
+    try assert_eq_i32(UIP_LLH_LEN, 14);
+    try assert_eq_i32(UIP_IPH_LEN, 20);
+    try assert_eq_i32(UIP_UDPH_LEN, 8);
+    try assert_eq_i32(UIP_TCPH_LEN, 20);
+    try assert_eq_i32(UIP_IPUDPH_LEN, 28);
+    try assert_eq_i32(UIP_IPTCPH_LEN, 40);
+    try assert_eq_i32(UIP_TCPIP_HLEN, 40);
+    try assert_eq_i32(UIP_TCP_MSS, 346);
+    try assert_eq_i32(UIP_RECEIVE_WINDOW, 346);
+    try assert_eq_i32(UIP_CONNS, 10);
+    try assert_eq_i32(UIP_LISTENPORTS, 20);
+    try assert_eq_i32(UIP_BYTE_ORDER, 3412);
+}

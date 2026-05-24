@@ -1,0 +1,23 @@
+use std.testing;
+
+test "uiplib_ipaddrconv focused parses dotted quad" {
+    var ip: [byte: 4] = [];
+    const ok: byte = uiplib_ipaddrconv("192.168.0.2", &ip[0]);
+    try assert_eq_i32(ok as i32, 1);
+    try assert_eq_i32(ip[0] as i32, 192);
+    try assert_eq_i32(ip[1] as i32, 168);
+    try assert_eq_i32(ip[2] as i32, 0);
+    try assert_eq_i32(ip[3] as i32, 2);
+}
+
+test "uiplib_ipaddrconv focused rejects non digit segment" {
+    var ip: [byte: 4] = [];
+    const ok: byte = uiplib_ipaddrconv("10.a.0.1", &ip[0]);
+    try assert_eq_i32(ok as i32, 0);
+}
+
+test "uiplib_ipaddrconv focused rejects overlong segment" {
+    var ip: [byte: 4] = [];
+    const ok: byte = uiplib_ipaddrconv("12345.0.0.1", &ip[0]);
+    try assert_eq_i32(ok as i32, 0);
+}

@@ -1,0 +1,476 @@
+use std.testing;
+
+extern fn tcp_syn_sent_step(state: &UipState, rt: &UipRuntime, conn_index: i32, frame: &UipFrame) UipProcessResult;
+extern fn tcp_syn_rcvd_step(state: &UipState, rt: &UipRuntime, conn_index: i32, incoming_len: u16, app_slen: u16) UipProcessResult;
+extern fn uip_process_tcp_core(state: &UipState, rt: &UipRuntime, conn_index: i32, incoming_len: u16, has_ack: bool, has_fin: bool, app_slen: u16) UipProcessResult;
+extern fn tcp_ack_outstanding(state: &UipState, rt: &UipRuntime, conn_index: i32, frame: &UipFrame) UipProcessResult;
+extern fn tcp_post_ack_state_step(state: &UipState, conn_index: i32, has_ack: bool) UipProcessResult;
+extern fn tcp_established_fin_step(state: &UipState, rt: &UipRuntime, conn_index: i32, incoming_len: u16, has_fin: bool) UipProcessResult;
+
+extern const UIP_DATA: i32;
+extern const UIP_ACKDATA: i32;
+extern const UIP_NEWDATA: i32;
+extern const UIP_CONNECTED: i32;
+extern const UIP_ABORT: i32;
+extern const UIP_CLOSED: i32;
+extern const UIP_SYN_RCVD: i32;
+extern const UIP_SYN_SENT: i32;
+extern const UIP_ESTABLISHED: i32;
+extern const UIP_FIN_WAIT_2: i32;
+extern const UIP_TIME_WAIT: i32;
+extern const UIP_LAST_ACK: i32;
+extern const UIP_FIN_WAIT_1: i32;
+extern const UIP_CLOSING: i32;
+extern const UIP_ACKDATA: i32;
+extern const UIP_CLOSE: i32;
+extern const UIP_PROTO_UDP: i32;
+extern const TCP_SYN: i32;
+extern const TCP_ACK: i32;
+extern const TCP_RST: i32;
+
+struct EthIpHdr {
+    ethhdr: UipEthHdr,
+    vhl: byte,
+    tos: byte,
+    len: [byte: 2],
+    ipid: [byte: 2],
+    ipoffset: [byte: 2],
+    ttl: byte,
+    proto: byte,
+    ipchksum: u16,
+    srcipaddr: [u16: 2],
+    destipaddr: [u16: 2]
+}
+
+test "tcp_established_fin_step enters last_ack on fin with data" {
+    var rt: UipRuntime = hs_make_runtime(0 as byte, 0u16, 0u16, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte);
+    var state: UipState = hs_make_state((UIP_ESTABLISHED as! byte).value, 0u16, 5 as byte);
+    const result: UipProcessResult = tcp_established_fin_step(&state, &rt, 0, 3u16, true);
+    try assert_eq_i32(result.flags as i32, UIP_CLOSE | UIP_NEWDATA);
+    try assert_eq_bool(result.appcall, true);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_LAST_ACK);
+    try assert_eq_i32(state.conns[0].len as i32, 1);
+    try assert_eq_i32(state.conns[0].rcv_nxt[3] as i32, 9);
+}
+
+test "uip_process_core unmatched tcp sends rst reply" {
+    var rt: UipRuntime = hs_make_runtime(0 as byte, 0u16, 0u16, (TCP_ACK as! byte).value, 0 as byte, 0 as byte, 0 as byte, 9 as byte, 0 as byte, 0 as byte);
+    rt.frame.ethtcp.srcport = 1234u16;
+    rt.frame.ethtcp.destport = 80u16;
+    rt.frame.ethtcp.srcipaddr[0] = 0x1111u16;
+    rt.frame.ethtcp.srcipaddr[1] = 0x2222u16;
+    rt.frame.ethtcp.destipaddr[0] = 0x3333u16;
+    rt.frame.ethtcp.destipaddr[1] = 0x4444u16;
+    var state: UipState = hs_make_state(0 as byte, 0u16, 0 as byte);
+    const result: UipProcessResult = uip_process_tcp_core(&state, &rt, -1, 0u16, true, false, 0u16);
+    try assert_eq_i32(result.flags as i32, UIP_ABORT);
+    try assert_eq_i32(result.len as i32, 1);
+    try assert_eq_i32(rt.frame.ethtcp.flags as i32, TCP_RST | TCP_ACK);
+    try assert_eq_i32(rt.frame.ethtcp.destport as i32, 1234);
+    try assert_eq_i32(rt.frame.ethtcp.srcport as i32, 80);
+    try assert_eq_i32(rt.frame.ethtcp.ackno[3] as i32, 10);
+}
+
+struct EthTcpHdr {
+    ethhdr: UipEthHdr,
+    vhl: byte,
+    tos: byte,
+    len: [byte: 2],
+    ipid: [byte: 2],
+    ipoffset: [byte: 2],
+    ttl: byte,
+    proto: byte,
+    ipchksum: u16,
+    srcipaddr: [u16: 2],
+    destipaddr: [u16: 2],
+    srcport: u16,
+    destport: u16,
+    seqno: [byte: 4],
+    ackno: [byte: 4],
+    tcpoffset: byte,
+    flags: byte,
+    wnd: [byte: 2],
+    tcpchksum: u16,
+    urgp: u16,
+    optdata: [byte: 4]
+}
+
+struct EthUdpHdr {
+    ethhdr: UipEthHdr,
+    vhl: byte,
+    tos: byte,
+    len: [byte: 2],
+    ipid: [byte: 2],
+    ipoffset: [byte: 2],
+    ttl: byte,
+    proto: byte,
+    ipchksum: u16,
+    srcipaddr: [u16: 2],
+    destipaddr: [u16: 2],
+    srcport: u16,
+    destport: u16,
+    udplen: u16,
+    udpchksum: u16
+}
+
+struct UipFrame {
+    ethip: EthIpHdr,
+    ethtcp: EthTcpHdr,
+    ethudp: EthUdpHdr,
+    arp: ArpHdr
+}
+
+struct UipRuntime {
+    frame: UipFrame,
+    hostaddr: UipIpAddr,
+    draddr: UipIpAddr,
+    netmask: UipIpAddr,
+    appdata: &byte,
+    sappdata: &byte,
+    len: u16,
+    slen: u16,
+    flags: byte,
+    current_conn: i32,
+    current_udp_conn: i32,
+    acc32: [byte: 4],
+    ipid: u16,
+    iss: [byte: 4]
+}
+
+struct UipProcessResult {
+    flags: byte,
+    len: u16,
+    poll: bool,
+    timed_out: bool,
+    retransmit: bool,
+    appcall: bool,
+    closed: bool
+}
+
+struct ArpHdr {
+    ethhdr: UipEthHdr,
+    hwtype: u16,
+    protocol: u16,
+    hwlen: byte,
+    protolen: byte,
+    opcode: u16,
+    shwaddr: UipEthAddr,
+    sipaddr: [u16: 2],
+    dhwaddr: UipEthAddr,
+    dipaddr: [u16: 2]
+}
+
+struct UipEthHdr {
+    dest: UipEthAddr,
+    src: UipEthAddr,
+    type: u16
+}
+
+struct UipEthAddr {
+    addr: [byte: 6]
+}
+
+struct UipIpAddr {
+    words: [u16: 2]
+}
+
+struct UipConn {
+    ripaddr: UipIpAddr,
+    lport: u16,
+    rport: u16,
+    rcv_nxt: [byte: 4],
+    snd_nxt: [byte: 4],
+    len: u16,
+    mss: u16,
+    initialmss: u16,
+    sa: byte,
+    sv: byte,
+    rto: byte,
+    tcpstateflags: byte,
+    timer: byte,
+    nrtx: byte,
+    appstate: u16
+}
+
+struct UipUdpConn {
+    ripaddr: UipIpAddr,
+    lport: u16,
+    rport: u16,
+    ttl: byte,
+    appstate: u16
+}
+
+struct UipState {
+    listenports: [u16: 20],
+    conns: [UipConn: 10],
+    udp_conns: [UipUdpConn: 10],
+    acc32: [byte: 4],
+    flags: byte,
+    len: u16,
+    lastport: u16
+}
+
+fn hs_make_runtime(flags: byte, len: u16, slen: u16, tcp_flags: byte, seq0: byte, seq1: byte, seq2: byte, seq3: byte, mss2: byte, mss3: byte) UipRuntime {
+    var rt: UipRuntime = UipRuntime {
+        frame: UipFrame {
+            ethip: EthIpHdr {
+                ethhdr: UipEthHdr {
+                    dest: UipEthAddr { addr: [0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte] },
+                    src: UipEthAddr { addr: [0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte] },
+                    type: 0u16
+                },
+                vhl: 0 as byte,
+                tos: 0 as byte,
+                len: [0 as byte, 0 as byte],
+                ipid: [0 as byte, 0 as byte],
+                ipoffset: [0 as byte, 0 as byte],
+                ttl: 0 as byte,
+                proto: (UIP_PROTO_UDP as! byte).value,
+                ipchksum: 0u16,
+                srcipaddr: [0u16, 0u16],
+                destipaddr: [0u16, 0u16]
+            },
+            ethtcp: EthTcpHdr {
+                ethhdr: UipEthHdr {
+                    dest: UipEthAddr { addr: [0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte] },
+                    src: UipEthAddr { addr: [0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte] },
+                    type: 0u16
+                },
+                vhl: 0 as byte,
+                tos: 0 as byte,
+                len: [0 as byte, 0 as byte],
+                ipid: [0 as byte, 0 as byte],
+                ipoffset: [0 as byte, 0 as byte],
+                ttl: 0 as byte,
+                proto: (UIP_PROTO_UDP as! byte).value,
+                ipchksum: 0u16,
+                srcipaddr: [0u16, 0u16],
+                destipaddr: [0u16, 0u16],
+                srcport: 0u16,
+                destport: 0u16,
+                seqno: [seq0, seq1, seq2, seq3],
+                ackno: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+                tcpoffset: 0x50 as byte,
+                flags: tcp_flags,
+                wnd: [0 as byte, 0 as byte],
+                tcpchksum: 0u16,
+                urgp: 0u16,
+                optdata: [2 as byte, 4 as byte, mss2, mss3]
+            },
+            ethudp: EthUdpHdr {
+                ethhdr: UipEthHdr {
+                    dest: UipEthAddr { addr: [0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte] },
+                    src: UipEthAddr { addr: [0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte] },
+                    type: 0u16
+                },
+                vhl: 0 as byte,
+                tos: 0 as byte,
+                len: [0 as byte, 0 as byte],
+                ipid: [0 as byte, 0 as byte],
+                ipoffset: [0 as byte, 0 as byte],
+                ttl: 0 as byte,
+                proto: (UIP_PROTO_UDP as! byte).value,
+                ipchksum: 0u16,
+                srcipaddr: [0u16, 0u16],
+                destipaddr: [0u16, 0u16],
+                srcport: 0u16,
+                destport: 0u16,
+                udplen: 0u16,
+                udpchksum: 0u16
+            },
+            arp: ArpHdr {
+                ethhdr: UipEthHdr {
+                    dest: UipEthAddr { addr: [0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte] },
+                    src: UipEthAddr { addr: [0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte] },
+                    type: 0u16
+                },
+                hwtype: 0u16,
+                protocol: 0u16,
+                hwlen: 0 as byte,
+                protolen: 0 as byte,
+                opcode: 0u16,
+                shwaddr: UipEthAddr { addr: [0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte] },
+                sipaddr: [0u16, 0u16],
+                dhwaddr: UipEthAddr { addr: [0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte] },
+                dipaddr: [0u16, 0u16]
+            }
+        },
+        hostaddr: UipIpAddr { words: [0u16, 0u16] },
+        draddr: UipIpAddr { words: [0u16, 0u16] },
+        netmask: UipIpAddr { words: [0u16, 0u16] },
+        appdata: &rt.frame.ethip.ethhdr.dest.addr[0],
+        sappdata: &rt.frame.ethip.ethhdr.dest.addr[0],
+        len: len,
+        slen: slen,
+        flags: flags,
+        current_conn: 0,
+        current_udp_conn: 0,
+        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+        ipid: 0u16,
+        iss: [0 as byte, 0 as byte, 0 as byte, 0 as byte]
+    };
+    return rt;
+}
+
+fn hs_make_state(tcpstateflags: byte, len: u16, rcv3: byte) UipState {
+    var state: UipState = UipState {
+        listenports: [0u16: 20],
+        conns: [UipConn {
+            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            lport: 0u16,
+            rport: 0u16,
+            rcv_nxt: [0 as byte, 0 as byte, 0 as byte, rcv3],
+            snd_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+            len: len,
+            mss: 0u16,
+            initialmss: 0u16,
+            sa: 0 as byte,
+            sv: 0 as byte,
+            rto: 0 as byte,
+            tcpstateflags: tcpstateflags,
+            timer: 0 as byte,
+            nrtx: 0 as byte,
+            appstate: 0u16
+        }: 10],
+        udp_conns: [UipUdpConn {
+            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            lport: 0u16,
+            rport: 0u16,
+            ttl: 0 as byte,
+            appstate: 0u16
+        }: 10],
+        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+        flags: 0 as byte,
+        len: 0u16,
+        lastport: 0u16
+    };
+    return state;
+}
+
+test "tcp_syn_sent_step establishes connection on synack" {
+    var rt: UipRuntime = hs_make_runtime((UIP_ACKDATA as! byte).value, 9u16, 7u16, ((TCP_SYN | TCP_ACK) as! byte).value, 1 as byte, 2 as byte, 3 as byte, 4 as byte, 1 as byte, 200 as byte);
+    var state: UipState = hs_make_state((UIP_SYN_SENT as! byte).value, 1u16, 0 as byte);
+    const result: UipProcessResult = tcp_syn_sent_step(&state, &rt, 0, &rt.frame);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_ESTABLISHED);
+    try assert_eq_i32(state.conns[0].rcv_nxt[3] as i32, 5);
+    try assert_eq_i32(state.conns[0].mss as i32, 346);
+    try assert_eq_i32(result.flags as i32, UIP_CONNECTED);
+    try assert_eq_bool(result.appcall, true);
+    try assert_eq_i32(rt.len as i32, 0);
+    try assert_eq_i32(rt.slen as i32, 0);
+}
+
+test "uip_process_core routes syn_sent synack and current implementation returns abort" {
+    var rt: UipRuntime = hs_make_runtime((UIP_ACKDATA as! byte).value, 9u16, 7u16, ((TCP_SYN | TCP_ACK) as! byte).value, 1 as byte, 2 as byte, 3 as byte, 4 as byte, 1 as byte, 200 as byte);
+    var state: UipState = hs_make_state((UIP_SYN_SENT as! byte).value, 1u16, 0 as byte);
+    const result: UipProcessResult = uip_process_core(&state, &rt, UIP_DATA, 0, 0u16, true, false, 0u16);
+    try assert_eq_i32(result.flags as i32, UIP_ABORT);
+    try assert_eq_bool(result.appcall, true);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_CLOSED);
+    try assert_eq_i32(rt.frame.ethtcp.flags as i32, TCP_ACK);
+}
+
+test "tcp_syn_sent_step aborts connection on unexpected response" {
+    var rt: UipRuntime = hs_make_runtime((UIP_ACKDATA as! byte).value, 0u16, 0u16, (TCP_ACK as! byte).value, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte);
+    var state: UipState = hs_make_state((UIP_SYN_SENT as! byte).value, 1u16, 0 as byte);
+    const result: UipProcessResult = tcp_syn_sent_step(&state, &rt, 0, &rt.frame);
+    try assert_eq_i32(result.flags as i32, UIP_ABORT);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_CLOSED);
+    try assert_eq_bool(result.closed, true);
+}
+
+test "tcp_syn_rcvd_step transitions to established and flags connected with newdata" {
+    var rt: UipRuntime = hs_make_runtime((UIP_ACKDATA as! byte).value, 0u16, 0u16, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte);
+    var state: UipState = hs_make_state((UIP_SYN_RCVD as! byte).value, 1u16, 1 as byte);
+    const result: UipProcessResult = tcp_syn_rcvd_step(&state, &rt, 0, 3u16, 0u16);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_ESTABLISHED);
+    try assert_eq_bool(result.appcall, true);
+    try assert_eq_i32(result.flags as i32, UIP_CONNECTED | UIP_NEWDATA);
+}
+
+test "uip_process_core routes syn_rcvd ack to ack handling before state transition" {
+    var rt: UipRuntime = hs_make_runtime((UIP_ACKDATA as! byte).value, 0u16, 0u16, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte);
+    rt.frame.ethtcp.flags = (TCP_ACK as! byte).value;
+    rt.frame.ethtcp.ackno[0] = 0 as byte;
+    rt.frame.ethtcp.ackno[1] = 0 as byte;
+    rt.frame.ethtcp.ackno[2] = 0 as byte;
+    rt.frame.ethtcp.ackno[3] = 1 as byte;
+    var state: UipState = hs_make_state((UIP_SYN_RCVD as! byte).value, 1u16, 1 as byte);
+    state.conns[0].snd_nxt[0] = 0 as byte;
+    state.conns[0].snd_nxt[1] = 0 as byte;
+    state.conns[0].snd_nxt[2] = 0 as byte;
+    state.conns[0].snd_nxt[3] = 0 as byte;
+    const result: UipProcessResult = uip_process_core(&state, &rt, UIP_DATA, 0, 3u16, true, false, 0u16);
+    try assert_eq_i32(result.flags as i32, UIP_CONNECTED | UIP_NEWDATA);
+    try assert_eq_bool(result.appcall, true);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_ESTABLISHED);
+    try assert_eq_i32(state.conns[0].len as i32, 0);
+    try assert_eq_i32(rt.frame.ethtcp.flags as i32, TCP_ACK);
+    try assert_eq_i32(rt.frame.ethtcp.ackno[0] as i32, 0);
+    try assert_eq_i32(rt.frame.ethtcp.ackno[1] as i32, 0);
+    try assert_eq_i32(rt.frame.ethtcp.ackno[2] as i32, 0);
+    try assert_eq_i32(rt.frame.ethtcp.ackno[3] as i32, 4);
+}
+
+test "tcp_post_ack_state_step advances fin states" {
+    var state: UipState = hs_make_state((UIP_FIN_WAIT_1 as! byte).value, 1u16, 0 as byte);
+    var result: UipProcessResult = tcp_post_ack_state_step(&state, 0, true);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_FIN_WAIT_2);
+    try assert_eq_bool(result.closed, false);
+
+    state.conns[0].tcpstateflags = (UIP_CLOSING as! byte).value;
+    state.conns[0].timer = 9 as byte;
+    result = tcp_post_ack_state_step(&state, 0, true);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_TIME_WAIT);
+    try assert_eq_i32(state.conns[0].timer as i32, 0);
+
+    state.conns[0].tcpstateflags = (UIP_LAST_ACK as! byte).value;
+    result = tcp_post_ack_state_step(&state, 0, true);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_CLOSED);
+    try assert_eq_bool(result.closed, true);
+}
+
+test "tcp_fin_wait_2_step enters time_wait and keeps close flags" {
+    var rt: UipRuntime = hs_make_runtime(0 as byte, 0u16, 0u16, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte);
+    var state: UipState = hs_make_state((UIP_FIN_WAIT_2 as! byte).value, 0u16, 1 as byte);
+    const result: UipProcessResult = tcp_fin_wait_2_step(&state, &rt, 0, 2u16, true);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_TIME_WAIT);
+    try assert_eq_i32(state.conns[0].rcv_nxt[3] as i32, 4);
+    try assert_eq_i32(state.conns[0].timer as i32, 0);
+    try assert_eq_i32(result.flags as i32, UIP_CLOSE | UIP_NEWDATA);
+    try assert_eq_bool(result.appcall, true);
+}
+
+test "uip_process_core routes fin_wait_2 fin to ack output" {
+    var rt: UipRuntime = hs_make_runtime(0 as byte, 0u16, 0u16, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte);
+    var state: UipState = hs_make_state((UIP_FIN_WAIT_2 as! byte).value, 0u16, 1 as byte);
+    state.conns[0].lport = 80u16;
+    state.conns[0].rport = 1000u16;
+    const result: UipProcessResult = uip_process_core(&state, &rt, UIP_DATA, 0, 2u16, false, true, 0u16);
+    try assert_eq_i32(result.flags as i32, UIP_CLOSE | UIP_NEWDATA);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_TIME_WAIT);
+    try assert_eq_i32(rt.frame.ethtcp.flags as i32, TCP_ACK);
+    try assert_eq_i32(rt.frame.ethtcp.ackno[3] as i32, 4);
+}
+
+test "uip_tcp_handshake_ack_outstanding advances snd_nxt and clears len" {
+    var rt: UipRuntime = hs_make_runtime(0 as byte, 0u16, 0u16, (TCP_ACK as! byte).value, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte);
+    rt.frame.ethtcp.ackno[0] = 0 as byte;
+    rt.frame.ethtcp.ackno[1] = 0 as byte;
+    rt.frame.ethtcp.ackno[2] = 0 as byte;
+    rt.frame.ethtcp.ackno[3] = 3 as byte;
+    var state: UipState = hs_make_state((UIP_ESTABLISHED as! byte).value, 2u16, 0 as byte);
+    state.conns[0].snd_nxt[0] = 0 as byte;
+    state.conns[0].snd_nxt[1] = 0 as byte;
+    state.conns[0].snd_nxt[2] = 0 as byte;
+    state.conns[0].snd_nxt[3] = 1 as byte;
+    state.conns[0].sa = 8 as byte;
+    state.conns[0].sv = 4 as byte;
+    state.conns[0].rto = 6 as byte;
+    state.conns[0].timer = 2 as byte;
+    const result: UipProcessResult = tcp_ack_outstanding(&state, &rt, 0, &rt.frame);
+    try assert_eq_i32(result.flags as i32, UIP_ACKDATA);
+    try assert_eq_i32(state.conns[0].snd_nxt[3] as i32, 3);
+    try assert_eq_i32(state.conns[0].len as i32, 0);
+    try assert_eq_i32(state.conns[0].timer as i32, state.conns[0].rto as i32);
+}
