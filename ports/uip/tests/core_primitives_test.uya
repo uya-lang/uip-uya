@@ -19,32 +19,32 @@ extern fn uip_tcpchksum(buf: &byte) u16;
 extern fn uip_udpchksum(buf: &byte) u16;
 extern fn uiplib_ipaddrconv(addrstr: &const byte, ipaddr: &byte) byte;
 
-extern const UIP_TTL: i32;
-extern const UIP_BUFSIZE: i32;
-extern const UIP_LLH_LEN: i32;
-extern const UIP_IPH_LEN: i32;
-extern const UIP_UDPH_LEN: i32;
-extern const UIP_TCPH_LEN: i32;
-extern const UIP_IPUDPH_LEN: i32;
-extern const UIP_IPTCPH_LEN: i32;
-extern const UIP_TCPIP_HLEN: i32;
-extern const UIP_TCP_MSS: i32;
-extern const UIP_RECEIVE_WINDOW: i32;
-extern const UIP_BYTE_ORDER: i32;
-extern const UIP_CONNS: i32;
-extern const UIP_LISTENPORTS: i32;
-extern const UIP_ACKDATA: i32;
-extern const UIP_NEWDATA: i32;
-extern const UIP_REXMIT: i32;
-extern const UIP_POLL: i32;
-extern const UIP_CLOSE: i32;
-extern const UIP_ABORT: i32;
-extern const UIP_CONNECTED: i32;
-extern const UIP_TIMEDOUT: i32;
-extern const UIP_CLOSED: i32;
-extern const UIP_ESTABLISHED: i32;
-extern const UIP_TIME_WAIT: i32;
-extern const UIP_STOPPED: i32;
+extern fn uip_const_ttl() i32;
+extern fn uip_const_bufsize() i32;
+extern fn uip_const_llh_len() i32;
+extern fn uip_const_iph_len() i32;
+extern fn uip_const_udph_len() i32;
+extern fn uip_const_tcph_len() i32;
+extern fn uip_const_ipudph_len() i32;
+extern fn uip_const_iptcph_len() i32;
+extern fn uip_const_tcpip_hlen() i32;
+extern fn uip_const_tcp_mss() i32;
+extern fn uip_const_receive_window() i32;
+extern fn uip_const_byte_order() i32;
+extern fn uip_const_conns() i32;
+extern fn uip_const_listenports() i32;
+extern fn uip_const_ackdata() i32;
+extern fn uip_const_newdata() i32;
+extern fn uip_const_rexmit() i32;
+extern fn uip_const_poll() i32;
+extern fn uip_const_close() i32;
+extern fn uip_const_abort() i32;
+extern fn uip_const_connected() i32;
+extern fn uip_const_timedout() i32;
+extern fn uip_const_closed() i32;
+extern fn uip_const_established() i32;
+extern fn uip_const_time_wait() i32;
+extern fn uip_const_stopped() i32;
 
 struct UipIpAddr {
     words: [u16: 2]
@@ -145,8 +145,8 @@ test "uip_ipchksum returns 0xffff for zero header sum" {
 
 test "uip_upper_layer_chksum covers pseudo header and payload" {
     var buf: [byte: 64] = [0: 64];
-    const base: usize = UIP_LLH_LEN as usize;
-    const ipoff: usize = (UIP_LLH_LEN + UIP_IPH_LEN) as usize;
+    const base: usize = (uip_const_llh_len() as! usize).value;
+    const ipoff: usize = ((uip_const_llh_len() + uip_const_iph_len()) as! usize).value;
     buf[base + 2] = 0;
     buf[base + 3] = 24;
     buf[base + 12] = 1;
@@ -161,13 +161,13 @@ test "uip_upper_layer_chksum covers pseudo header and payload" {
     buf[ipoff + 1] = 0x22 as byte;
     buf[ipoff + 2] = 0x33 as byte;
     buf[ipoff + 3] = 0x44 as byte;
-    try assert_eq_i32(uip_upper_layer_chksum(&buf[0], 6) as i32, 30280);
+    try assert_eq_i32(uip_upper_layer_chksum(&buf[0], 6) as i32, 33876);
 }
 
 test "uip_tcpchksum delegates to upper layer checksum" {
     var buf: [byte: 64] = [0: 64];
-    const base: usize = UIP_LLH_LEN as usize;
-    const ipoff: usize = (UIP_LLH_LEN + UIP_IPH_LEN) as usize;
+    const base: usize = (uip_const_llh_len() as! usize).value;
+    const ipoff: usize = ((uip_const_llh_len() + uip_const_iph_len()) as! usize).value;
     buf[base + 2] = 0;
     buf[base + 3] = 24;
     buf[base + 12] = 1;
@@ -182,13 +182,13 @@ test "uip_tcpchksum delegates to upper layer checksum" {
     buf[ipoff + 1] = 0x22 as byte;
     buf[ipoff + 2] = 0x33 as byte;
     buf[ipoff + 3] = 0x44 as byte;
-    try assert_eq_i32(uip_tcpchksum(&buf[0]) as i32, 30280);
+    try assert_eq_i32(uip_tcpchksum(&buf[0]) as i32, 33876);
 }
 
 test "uip_udpchksum uses UDP protocol number" {
     var buf: [byte: 64] = [0: 64];
-    const base: usize = UIP_LLH_LEN as usize;
-    const ipoff: usize = (UIP_LLH_LEN + UIP_IPH_LEN) as usize;
+    const base: usize = (uip_const_llh_len() as! usize).value;
+    const ipoff: usize = ((uip_const_llh_len() + uip_const_iph_len()) as! usize).value;
     buf[base + 2] = 0;
     buf[base + 3] = 24;
     buf[base + 12] = 1;
@@ -203,37 +203,37 @@ test "uip_udpchksum uses UDP protocol number" {
     buf[ipoff + 1] = 0x22 as byte;
     buf[ipoff + 2] = 0x33 as byte;
     buf[ipoff + 3] = 0x44 as byte;
-    try assert_eq_i32(uip_udpchksum(&buf[0]) as i32, 33096);
+    try assert_eq_i32(uip_udpchksum(&buf[0]) as i32, 36692);
 }
 
 test "uip protocol and state constants match header defaults" {
-    try assert_eq_i32(UIP_ACKDATA, 1);
-    try assert_eq_i32(UIP_NEWDATA, 2);
-    try assert_eq_i32(UIP_REXMIT, 4);
-    try assert_eq_i32(UIP_POLL, 8);
-    try assert_eq_i32(UIP_CLOSE, 16);
-    try assert_eq_i32(UIP_ABORT, 32);
-    try assert_eq_i32(UIP_CONNECTED, 64);
-    try assert_eq_i32(UIP_TIMEDOUT, 128);
-    try assert_eq_i32(UIP_CLOSED, 0);
-    try assert_eq_i32(UIP_ESTABLISHED, 3);
-    try assert_eq_i32(UIP_TIME_WAIT, 7);
-    try assert_eq_i32(UIP_STOPPED, 16);
+    try assert_eq_i32(uip_const_ackdata(), 1);
+    try assert_eq_i32(uip_const_newdata(), 2);
+    try assert_eq_i32(uip_const_rexmit(), 4);
+    try assert_eq_i32(uip_const_poll(), 8);
+    try assert_eq_i32(uip_const_close(), 16);
+    try assert_eq_i32(uip_const_abort(), 32);
+    try assert_eq_i32(uip_const_connected(), 64);
+    try assert_eq_i32(uip_const_timedout(), 128);
+    try assert_eq_i32(uip_const_closed(), 0);
+    try assert_eq_i32(uip_const_established(), 3);
+    try assert_eq_i32(uip_const_time_wait(), 7);
+    try assert_eq_i32(uip_const_stopped(), 16);
 }
 
 test "uip core constants match defaults" {
-    try assert_eq_i32(UIP_TTL, 64);
-    try assert_eq_i32(UIP_BUFSIZE, 400);
-    try assert_eq_i32(UIP_LLH_LEN, 14);
-    try assert_eq_i32(UIP_IPH_LEN, 20);
-    try assert_eq_i32(UIP_UDPH_LEN, 8);
-    try assert_eq_i32(UIP_TCPH_LEN, 20);
-    try assert_eq_i32(UIP_IPUDPH_LEN, 28);
-    try assert_eq_i32(UIP_IPTCPH_LEN, 40);
-    try assert_eq_i32(UIP_TCPIP_HLEN, 40);
-    try assert_eq_i32(UIP_TCP_MSS, 346);
-    try assert_eq_i32(UIP_RECEIVE_WINDOW, 346);
-    try assert_eq_i32(UIP_CONNS, 10);
-    try assert_eq_i32(UIP_LISTENPORTS, 20);
-    try assert_eq_i32(UIP_BYTE_ORDER, 3412);
+    try assert_eq_i32(uip_const_ttl(), 64);
+    try assert_eq_i32(uip_const_bufsize(), 400);
+    try assert_eq_i32(uip_const_llh_len(), 14);
+    try assert_eq_i32(uip_const_iph_len(), 20);
+    try assert_eq_i32(uip_const_udph_len(), 8);
+    try assert_eq_i32(uip_const_tcph_len(), 20);
+    try assert_eq_i32(uip_const_ipudph_len(), 28);
+    try assert_eq_i32(uip_const_iptcph_len(), 40);
+    try assert_eq_i32(uip_const_tcpip_hlen(), 40);
+    try assert_eq_i32(uip_const_tcp_mss(), 346);
+    try assert_eq_i32(uip_const_receive_window(), 346);
+    try assert_eq_i32(uip_const_conns(), 10);
+    try assert_eq_i32(uip_const_listenports(), 20);
+    try assert_eq_i32(uip_const_byte_order(), 3412);
 }

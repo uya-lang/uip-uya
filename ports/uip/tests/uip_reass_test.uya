@@ -1,0 +1,76 @@
+use std.testing;
+
+extern fn uip_reass_init(state: &UipReassState) void;
+extern fn uip_reass_overflow(frame: &EthIpHdr) bool;
+extern fn uip_reass_step(state: &UipReassState, frame: &EthIpHdr, payload: &byte, payload_len: u16, out: &EthIpHdr) u16;
+extern fn uip_reass_tick(state: &UipReassState) void;
+extern fn htons(val: u16) u16;
+
+extern const IP_MF: i32;
+extern const UIP_REASS_MAXAGE: i32;
+
+struct Timer { start: u64, interval: u64 }
+struct UipIpAddr { words: [u16: 2] }
+struct UipEthAddr { addr: [byte: 6] }
+struct ArpEntry { ipaddr: [u16: 2], ethaddr: UipEthAddr, time: byte }
+struct UipArpState { ethaddr: UipEthAddr, hostaddr: UipIpAddr, netmask: UipIpAddr, draddr: UipIpAddr, table: [ArpEntry: 8], arptime: byte }
+struct UipEthHdr { dest: UipEthAddr, src: UipEthAddr, type: u16 }
+struct EthIpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2] }
+struct UipReassState { buf: [byte: 386], bitmap: [byte: 6], len: u16, flags: byte, timer: byte }
+
+fn make_hdr(ipoffset0: byte, ipoffset1: byte, total_len: u16) EthIpHdr {
+    return EthIpHdr {
+        ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 },
+        vhl: 0x45 as byte,
+        tos: 0 as byte,
+        len: [((total_len >> 8) & 0xffu16) as! byte catch |_| { 0 as byte; }, (total_len & 0xffu16) as! byte catch |_| { 0 as byte; }],
+        ipid: [0x12 as byte, 0x34 as byte],
+        ipoffset: [ipoffset0, ipoffset1],
+        ttl: 64 as byte,
+        proto: 6 as byte,
+        ipchksum: 0u16,
+        srcipaddr: [htons(0x0a00u16), htons(0x0001u16)],
+        destipaddr: [htons(0x0a00u16), htons(0x0002u16)]
+    };
+}
+
+test "uip_reass_init clears timer and length" {
+    var state: UipReassState = UipReassState { buf: [1 as byte: 386], bitmap: [1 as byte: 6], len: 9u16, flags: 3 as byte, timer: 4 as byte };
+    uip_reass_init(&state);
+    try assert_eq_i32(state.len as i32, 0);
+    try assert_eq_i32(state.timer as i32, 0);
+}
+
+test "uip_reass_overflow detects too large fragment window" {
+    var hdr: EthIpHdr = make_hdr(0x1f as byte, 0xff as byte, 60u16);
+    try assert_eq_bool(uip_reass_overflow(&hdr), true);
+}
+
+test "uip_reass_step first fragment arms timer" {
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte };
+    var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
+    var frag0: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
+    var p0: [byte: 8] = [1,2,3,4,5,6,7,8];
+    try assert_eq_i32(uip_reass_step(&state, &frag0, &p0[0], 8u16, &out) as i32, 0);
+    try assert_eq_i32(state.timer as i32, UIP_REASS_MAXAGE);
+}
+
+test "uip_reass_step completes after last fragment" {
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte };
+    var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
+    var frag0: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
+    var frag1: EthIpHdr = make_hdr(0 as byte, 1 as byte, 24u16);
+    var p0: [byte: 8] = [1,2,3,4,5,6,7,8];
+    var p1: [byte: 4] = [9,10,11,12];
+    try assert_eq_i32(uip_reass_step(&state, &frag0, &p0[0], 8u16, &out) as i32, 0);
+    try assert_eq_i32(state.timer as i32, UIP_REASS_MAXAGE);
+    try assert_eq_i32(uip_reass_step(&state, &frag1, &p1[0], 4u16, &out) as i32, 12);
+    try assert_eq_i32(out.ipoffset[0] as i32, 0);
+    try assert_eq_i32(out.ipoffset[1] as i32, 0);
+}
+
+test "uip_reass_tick decrements active timer" {
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 2 as byte };
+    uip_reass_tick(&state);
+    try assert_eq_i32(state.timer as i32, 1);
+}

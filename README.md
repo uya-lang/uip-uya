@@ -1,3 +1,5 @@
+- `ports/uip/tests/uip_tcp_core_test.uya`：TCP ACK/SYNACK/FINACK 构包与 ACK-only 基础路径（**已切到 `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`**)
+- `ports/uip/tests/udp_test.uya`：UDP 定时轮询、连接匹配、输入选择、发送头填充（**已切到 `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`**)
 # uIP Uya 移植
 
 版本：v0.1.0
@@ -38,42 +40,68 @@
 | `clock.h` | 未单独移植 | 当前 uIP 端口未依赖单独时钟抽象，计时能力由 `Timer` 覆盖 |
 | `Makefile.include` | 无需移植 | 构建由当前仓库 Uya 工具链负责 |
 
+## 模块拆分计划（进行中）
+
+为降低 `ports/uip/uiplib.uya` 的耦合度，仓库已预留以下拆分目标文件：
+
+- `ports/uip/uip_core.uya`：核心常量、运行时、TCP/UDP、logging、urgent、reassembly（**已迁出核心子集并可独立测试：runtime / statistics / logging / urgent / reassembly**）
+- `ports/uip/uip_arp.uya`：ARP 状态与 `uip_arp_*`（**已迁出并可独立测试**）
+- `ports/uip/uip_fw_core.uya`：neighbor、fw、split（**已迁出并可独立测试**）
+- `ports/uip/uip_proto.uya`：`lc` / `pt` / `psock` / `timer`（**已迁出并可独立测试**）
+
+当前阶段为**兼容拆分进行中**：
+
+- `ports/uip/uiplib.uya` 仍保留历史实现，继续作为兼容入口
+- 新增模块已可作为更小的测试编译入口使用
+- 为避免一次性大改导致回归，当前**尚未删除 `uiplib.uya` 中的重复实现**；后续应按模块迁移完成度逐步收敛为聚合/兼容层
+
 ## 还未真正完整移植的功能清单
 
 以下内容虽然已有部分实现或等价替代，但**尚未达到原始 C 版本的完整语义覆盖**：
 
 ### A. `psock` 完整语义未补齐
-- `psock_generator_send()` 未实现
-- `send_data()` / `data_acked()` 的完整 ACK / 重传配合未复刻
-- 原始 `psock` 状态机中的完整状态流转尚未完整覆盖：
+- `psock_generator_send()` 已实现最小可用语义
+- `send_data()` / `data_acked()` 的完整 ACK / 重传配合已部分补齐：支持分段发送、ACK 推进和重传保持发送中状态，但仍非事件驱动版逐分支复刻
+- 原始 `psock` 状态机中的以下状态已提供最小等价层：
   - `STATE_ACKED`
   - `STATE_READ`
   - `STATE_BLOCKED_NEWDATA`
   - `STATE_BLOCKED_CLOSE`
   - `STATE_BLOCKED_SEND`
   - `STATE_DATA_SENT`
+- 但以下能力仍未完整复刻：
+  - 与真实 `uip_appdata` / `uip_datalen()` / `uip_newdata()` 回调驱动的逐事件行为
+  - `PSOCK_CLOSE()` / `PSOCK_CLOSE_EXIT()` 与真实 TCP close 路径的完整联动
+  - 原版 protothread 宏恢复下的逐调用控制流一致性
 
 ### B. `pt` 完整控制流模型未补齐
 - 未真正复刻这些原始能力：
   - `PT_BEGIN`
-  - `PT_WAIT_WHILE`
-  - `PT_WAIT_THREAD`
-  - `PT_SPAWN`
-  - `PT_RESTART`
-  - `PT_YIELD_UNTIL`
-- 当前仅提供最小状态兼容层，不是完整 protothread 控制流实现
+- 已补充函数级等价能力：
+  - `pt_wait_while`
+  - `pt_wait_thread`
+  - `pt_spawn`
+  - `pt_restart`
+  - `pt_yield_until`
+- 但当前仍不是基于宏展开的完整 protothread 控制流实现，无法像原版那样在 Uya 中透明表达 `PT_BEGIN/END + LC_SET/RESUME` 的现场恢复语义
 
 ### C. `lc-switch` 宏 continuation 技术未复刻
 - 当前 `Lc` 仅保存 continuation 状态
-- 原始 `LC_RESUME/LC_SET` 基于 `switch/case + __LINE__` 的恢复机制未真正移植
+- 已提供 `lc_init/lc_set/lc_resume/lc_end` 的显式状态版等价接口
+- 原始 `LC_RESUME/LC_SET` 基于 `switch/case + __LINE__` 的恢复机制仍未真正移植
 
 ### D. `uip.c` 缺失能力
 - IPv6 协议路径未完整移植
 - ICMPv6 / NS / NA 未完整移植
-- IP fragmentation / reassembly 未完整移植
-- `UIP_STATISTICS` 统计累积未完整移植
-- `UIP_LOGGING` 日志钩子未完整移植
-- `UIP_URGDATA` / urgent data 未完整移植
+- IP fragmentation / reassembly 已补充最小等价层：`UipReassState`、`uip_reass_init`、`uip_reass_overflow`、`uip_reass_step`、`uip_reass_tick`
+- 当前 `uip_core.uya` 中的实现已通过独立测试，覆盖**最小两片 IPv4 fragment 重组路径**
+- 但当前仍不是原版 `uip_reass()` 的逐字节等价复刻：
+  - 未覆盖完整多片/乱序/重复片语义
+  - 当前实现不再依赖原始 header compare 路径，而采用更小的测试导向等价层
+- `UIP_STATISTICS` 已补充最小统计结构初始化能力：`uip_stats_init`
+- `UIP_LOGGING` 已补充最小运行时日志钩子：`uip_runtime_log` / `uip_runtime_clear_log`，并在 TCP data / RST / URG 路径记录事件
+- `UIP_URGDATA` 已补充最小 urgent data 暴露：`urgdata` / `urglen` / `surglen` 与 `uip_tcp_prepare_urg`
+- 但这些仍未达到原版 `uip_process()` 的全路径统计/日志/urgent 语义覆盖
 - 完整 `uip_process()` 全分支语义仍属于裁剪版实现
 
 ### E. `uip-fw` / `uip-split` 的完整设备级行为未补齐
@@ -93,46 +121,80 @@
 
 为避免 TCP 与 UDP 测试相互干扰，测试已按职责拆分：
 
-- `ports/uip/tests/uip_core_base_test.uya`：基础类型、地址、校验和、定时器等核心能力
-- `ports/uip/tests/state_and_timer_test.uya`：状态初始化、监听、连接分配、UDP 连接管理
+- `ports/uip/tests/uip_core_base_test.uya`：基础类型、地址、校验和、定时器等核心能力（**已切到 `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`**)
+- `ports/uip/tests/state_and_timer_test.uya`：状态初始化、监听、连接分配、UDP 连接管理（**已切到 `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`**)
 - `ports/uip/tests/uip_tcp_core_test.uya`：TCP 核心处理逻辑
 - `ports/uip/tests/uip_tcp_handshake_test.uya`：TCP 握手与状态迁移
 - `ports/uip/tests/udp_test.uya`：UDP 收发与路由逻辑
 - `ports/uip/tests/uip_arp_test.uya` / `ports/uip/tests/arp_test.uya`：ARP 相关行为
 - `ports/uip/tests/uiplib_ipaddrconv_test.uya`：`uiplib_ipaddrconv` 聚焦测试
 - `ports/uip/tests/core_primitives_test.uya`：部分基础原语测试
-- `ports/uip/tests/uip_neighbor_test.uya`：邻居表初始化、老化、更新、查找与替换策略
+- `ports/uip/tests/uip_neighbor_test.uya`：邻居表初始化、老化、更新、查找与替换策略（**已切到 `ports/uip/uip_fw_core.uya`**)
 - `ports/uip/tests/uip_fw_test.uya`：转发接口选择、默认路由、TTL 递减与去重缓存
 - `ports/uip/tests/uip_split_test.uya`：满尺寸 TCP 报文拆分发送
 - `ports/uip/tests/lc_test.uya`：local continuation 最小状态层
 - `ports/uip/tests/pt_test.uya`：protothread 最小状态机行为
 - `ports/uip/tests/psock_test.uya`：protosocket 初始化、发送、读缓冲与读到标记
 
+## 测试入口矩阵
+
+当前测试应按**模块归属**选择编译入口：
+
+### 已切到拆分模块的测试
+- `ports/uip/tests/lc_test.uya` → `ports/uip/uip_proto.uya`
+- `ports/uip/tests/pt_test.uya` → `ports/uip/uip_proto.uya`
+- `ports/uip/tests/psock_test.uya` → `ports/uip/uip_proto.uya`
+- `ports/uip/tests/uip_arp_test.uya` / `ports/uip/tests/arp_test.uya` → `ports/uip/uip_arp.uya`
+- `ports/uip/tests/uip_fw_test.uya` → `ports/uip/uip_fw_core.uya`
+- `ports/uip/tests/uip_neighbor_test.uya` → `ports/uip/uip_fw_core.uya`
+- `ports/uip/tests/uip_split_test.uya` → `ports/uip/uip_fw_core.uya`
+- `ports/uip/tests/uip_runtime_features_test.uya` → `ports/uip/uip_core.uya`
+- `ports/uip/tests/uip_reass_test.uya` → `ports/uip/uip_core.uya`
+- `ports/uip/tests/core_primitives_test.uya` → `ports/uip/uip_core.uya`
+- `ports/uip/tests/uiplib_ipaddrconv_test.uya` → `ports/uip/uip_core.uya`
+- `ports/uip/tests/state_and_timer_test.uya` → `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`
+- `ports/uip/tests/uip_core_base_test.uya` → `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`
+- `ports/uip/tests/udp_test.uya` → `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`
+- `ports/uip/tests/uip_tcp_core_test.uya` → `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`
+- `ports/uip/tests/uip_tcp_handshake_test.uya` → `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`
+
+### 当前 `uiplib.uya` 的角色
+- `ports/uip/uiplib.uya` 仍保留历史实现，继续作为兼容入口
+- 但当前 `ports/uip/tests/*.uya` 已全部具备更小的模块化测试入口，不再要求统一依赖 `uiplib.uya`
+
 ## 运行方式
 
 在仓库根目录执行：
 
 ```bash
-./uya/bin/uya test ports/uip/tests/uip_core_base_test.uya ports/uip/uiplib.uya
-./uya/bin/uya test ports/uip/tests/state_and_timer_test.uya ports/uip/uiplib.uya
-./uya/bin/uya test ports/uip/tests/uip_tcp_core_test.uya ports/uip/uiplib.uya
-./uya/bin/uya test ports/uip/tests/uip_tcp_handshake_test.uya ports/uip/uiplib.uya
-./uya/bin/uya test ports/uip/tests/udp_test.uya ports/uip/uiplib.uya
-./uya/bin/uya test ports/uip/tests/uip_arp_test.uya ports/uip/uiplib.uya
-./uya/bin/uya test ports/uip/tests/uip_neighbor_test.uya ports/uip/uiplib.uya
-./uya/bin/uya test ports/uip/tests/uip_fw_test.uya ports/uip/uiplib.uya
-./uya/bin/uya test ports/uip/tests/uip_split_test.uya ports/uip/uiplib.uya
-./uya/bin/uya test ports/uip/tests/lc_test.uya ports/uip/uiplib.uya
-./uya/bin/uya test ports/uip/tests/pt_test.uya ports/uip/uiplib.uya
-./uya/bin/uya test ports/uip/tests/psock_test.uya ports/uip/uiplib.uya
+# 推荐：按拆分模块运行更小的测试编译入口
+./uya/bin/uya test ports/uip/tests/uip_runtime_features_test.uya ports/uip/uip_core.uya
+./uya/bin/uya test ports/uip/tests/uip_reass_test.uya ports/uip/uip_core.uya
+./uya/bin/uya test ports/uip/tests/core_primitives_test.uya ports/uip/uip_core.uya
+./uya/bin/uya test ports/uip/tests/uiplib_ipaddrconv_test.uya ports/uip/uip_core.uya
+./uya/bin/uya test ports/uip/tests/state_and_timer_test.uya ports/uip/uip_core.uya ports/uip/uip_proto.uya
+./uya/bin/uya test ports/uip/tests/uip_core_base_test.uya ports/uip/uip_core.uya ports/uip/uip_proto.uya
+./uya/bin/uya test ports/uip/tests/udp_test.uya ports/uip/uip_core.uya ports/uip/uip_proto.uya
+./uya/bin/uya test ports/uip/tests/uip_tcp_core_test.uya ports/uip/uip_core.uya ports/uip/uip_proto.uya
+./uya/bin/uya test ports/uip/tests/uip_tcp_handshake_test.uya ports/uip/uip_core.uya ports/uip/uip_proto.uya
+./uya/bin/uya test ports/uip/tests/uip_arp_test.uya ports/uip/uip_arp.uya
+./uya/bin/uya test ports/uip/tests/arp_test.uya ports/uip/uip_arp.uya
+./uya/bin/uya test ports/uip/tests/uip_fw_test.uya ports/uip/uip_fw_core.uya
+./uya/bin/uya test ports/uip/tests/uip_neighbor_test.uya ports/uip/uip_fw_core.uya
+./uya/bin/uya test ports/uip/tests/uip_split_test.uya ports/uip/uip_fw_core.uya
+./uya/bin/uya test ports/uip/tests/lc_test.uya ports/uip/uip_proto.uya
+./uya/bin/uya test ports/uip/tests/pt_test.uya ports/uip/uip_proto.uya
+./uya/bin/uya test ports/uip/tests/psock_test.uya ports/uip/uip_proto.uya
 ```
 
-全量回归可执行：
+当前不再建议使用下面这种“所有 tests 一律用 `uiplib.uya`”的伪全量回归方式，因为仓库已进入拆分阶段，测试入口应与模块归属对应：
 
 ```bash
-for f in ports/uip/tests/*.uya; do
-  ./uya/bin/uya test "$f" ports/uip/uiplib.uya || exit 1
-done
+# 仅示意：按测试归属选择模块入口，不建议统一绑定 uiplib.uya
+./uya/bin/uya test ports/uip/tests/lc_test.uya ports/uip/uip_proto.uya
+./uya/bin/uya test ports/uip/tests/uip_arp_test.uya ports/uip/uip_arp.uya
+./uya/bin/uya test ports/uip/tests/uip_fw_test.uya ports/uip/uip_fw_core.uya
+./uya/bin/uya test ports/uip/tests/uip_reass_test.uya ports/uip/uip_core.uya
 ```
 
 ## 移植范围说明

@@ -1,0 +1,322 @@
+// Protocol primitives split from uiplib.uya.
+
+export struct Lc {
+    line: u16
+}
+
+export const PT_WAITING: i32 = 0;
+export const PT_EXITED: i32 = 1;
+export const PT_ENDED: i32 = 2;
+export const PT_YIELDED: i32 = 3;
+
+export struct Pt {
+    lc: u16,
+    yielded: bool,
+    waiting: bool,
+    exit_requested: bool,
+    restart_requested: bool
+}
+
+export const PSOCK_STATE_NONE: i32 = 0;
+export const PSOCK_STATE_ACKED: i32 = 1;
+export const PSOCK_STATE_READ: i32 = 2;
+export const PSOCK_STATE_BLOCKED_NEWDATA: i32 = 3;
+export const PSOCK_STATE_BLOCKED_CLOSE: i32 = 4;
+export const PSOCK_STATE_BLOCKED_SEND: i32 = 5;
+export const PSOCK_STATE_DATA_SENT: i32 = 6;
+
+export struct PsockBuf {
+    ptr: &byte,
+    left: u16
+}
+
+export struct Psock {
+    pt: Pt,
+    psockpt: Pt,
+    sendptr: &byte,
+    readptr: &byte,
+    bufptr: &byte,
+    sendlen: u16,
+    readlen: u16,
+    buf: PsockBuf,
+    bufsize: usize,
+    state: byte,
+    lastlen: u16
+}
+
+export struct Timer {
+    start: u64,
+    interval: u64
+}
+
+export fn lc_init(lc: &Lc) void {
+    lc.line = 0u16;
+}
+
+export fn lc_set(lc: &Lc, line: u16) void {
+    lc.line = line;
+}
+
+export fn lc_resume(lc: &Lc) u16 {
+    return lc.line;
+}
+
+export fn lc_end(lc: &Lc) void {
+    lc.line = 0u16;
+}
+
+export fn pt_init(pt: &Pt) void {
+    pt.lc = 0u16;
+    pt.yielded = false;
+    pt.waiting = false;
+    pt.exit_requested = false;
+    pt.restart_requested = false;
+}
+
+export fn pt_wait_until(pt: &Pt, condition: bool) byte {
+    pt.lc = 1u16;
+    pt.waiting = !condition;
+    if !condition {
+        return PT_WAITING as byte;
+    }
+    return PT_YIELDED as byte;
+}
+
+export fn pt_wait_while(pt: &Pt, condition: bool) byte {
+    return pt_wait_until(pt, !condition);
+}
+
+export fn pt_wait_thread(pt: &Pt, status: byte) byte {
+    return pt_wait_while(pt, pt_schedule(status));
+}
+
+export fn pt_spawn(pt: &Pt, child: &Pt, status: byte) byte {
+    pt_init(child);
+    return pt_wait_thread(pt, status);
+}
+
+export fn pt_restart(pt: &Pt) byte {
+    pt_init(pt);
+    pt.restart_requested = true;
+    return PT_WAITING as byte;
+}
+
+export fn pt_yield(pt: &Pt) byte {
+    pt.yielded = true;
+    pt.lc = 1u16;
+    return PT_YIELDED as byte;
+}
+
+export fn pt_yield_until(pt: &Pt, condition: bool) byte {
+    pt.yielded = true;
+    pt.lc = 1u16;
+    if !condition {
+        return PT_YIELDED as byte;
+    }
+    pt.yielded = false;
+    return PT_WAITING as byte;
+}
+
+export fn pt_exit(pt: &Pt) byte {
+    pt.exit_requested = true;
+    pt_init(pt);
+    return PT_EXITED as byte;
+}
+
+export fn pt_end(pt: &Pt) byte {
+    pt_init(pt);
+    return PT_ENDED as byte;
+}
+
+export fn pt_schedule(status: byte) bool {
+    return status == (PT_WAITING as! byte).value;
+}
+
+fn psock_buf_setup(buf: &PsockBuf, bufptr: &byte, bufsize: usize) void {
+    buf.ptr = bufptr;
+    buf.left = (bufsize as! u16).value;
+}
+
+export fn psock_init(psock: &Psock, buffer: &byte, buffersize: usize) void {
+    psock.state = 0 as byte;
+    psock.sendlen = 0u16;
+    psock.readlen = 0u16;
+    psock.lastlen = 0u16;
+    psock.bufptr = buffer;
+    psock.bufsize = buffersize;
+    psock.sendptr = null;
+    psock.readptr = null;
+    psock_buf_setup(&psock.buf, buffer, buffersize);
+    pt_init(&psock.pt);
+    pt_init(&psock.psockpt);
+}
+
+export fn psock_datalen(psock: &Psock) u16 {
+    return ((psock.bufsize as! u16).value) - psock.buf.left;
+}
+
+export fn psock_newdata(psock: &Psock) bool {
+    if psock.readlen > 0u16 {
+        return true;
+    }
+    if psock.state == (2 as byte) {
+        return true;
+    }
+    return psock_datalen(psock) > 0u16;
+}
+
+export fn psock_close(psock: &Psock) void {
+    psock.state = (PSOCK_STATE_BLOCKED_CLOSE as! byte).value;
+}
+
+export fn psock_exit(psock: &Psock) byte {
+    psock_close(psock);
+    return pt_exit(&psock.pt);
+}
+
+export fn psock_close_exit(psock: &Psock) byte {
+    psock_close(psock);
+    return psock_exit(psock);
+}
+
+export fn psock_send(psock: &Psock, buf: &byte, len: u16, mss: u16, rexmit: bool, acked: bool) byte {
+    if len == 0u16 {
+        psock.state = (PSOCK_STATE_BLOCKED_CLOSE as! byte).value;
+        return PT_EXITED as byte;
+    }
+    if psock.sendlen == 0u16 {
+        psock.sendptr = buf;
+        psock.sendlen = len;
+        psock.state = (PSOCK_STATE_NONE as! byte).value;
+    }
+    if psock.sendlen > mss {
+        psock.lastlen = mss;
+    } else {
+        psock.lastlen = psock.sendlen;
+    }
+    if acked && psock.state == (PSOCK_STATE_DATA_SENT as! byte).value {
+        if psock.sendlen > psock.lastlen {
+            psock.sendptr = @ptr_from_usize(@usize_from_ptr(psock.sendptr as &void) + (psock.lastlen as usize)) as &byte;
+            psock.sendlen = psock.sendlen - psock.lastlen;
+        } else {
+            psock.sendptr = @ptr_from_usize(@usize_from_ptr(psock.sendptr as &void) + (psock.sendlen as usize)) as &byte;
+            psock.sendlen = 0u16;
+        }
+        psock.state = (PSOCK_STATE_ACKED as! byte).value;
+        if psock.sendlen == 0u16 {
+            psock.state = (PSOCK_STATE_NONE as! byte).value;
+            return PT_ENDED as byte;
+        }
+    }
+    if psock.state != (PSOCK_STATE_DATA_SENT as! byte).value || rexmit {
+        psock.state = (PSOCK_STATE_BLOCKED_SEND as! byte).value;
+        psock.state = (PSOCK_STATE_DATA_SENT as! byte).value;
+    }
+    return PT_WAITING as byte;
+}
+
+export fn psock_generator_send(psock: &Psock, generated_len: u16, mss: u16, rexmit: bool, acked: bool) byte {
+    if generated_len == 0u16 {
+        return PT_EXITED as byte;
+    }
+    if psock.sendlen == 0u16 {
+        psock.sendlen = generated_len;
+        psock.sendptr = psock.bufptr;
+        psock.state = 0 as byte;
+    }
+    if rexmit {
+        psock.sendlen = generated_len;
+    }
+    return psock_send(psock, psock.sendptr, psock.sendlen, mss, rexmit, acked);
+}
+
+export fn psock_readbuf(psock: &Psock, input: &byte, input_len: u16) byte {
+    psock_buf_setup(&psock.buf, psock.bufptr, psock.bufsize);
+    if input_len == 0u16 && psock.readlen == 0u16 {
+        psock.state = 3 as byte;
+        return PT_WAITING as byte;
+    }
+    psock.state = 2 as byte;
+    if psock.readlen == 0u16 {
+        psock.readptr = input;
+        psock.readlen = input_len;
+    }
+    var copied: u16 = 0u16;
+    while copied < psock.readlen && psock.buf.left > 0u16 {
+        psock.buf.ptr[copied as usize] = psock.readptr[copied as usize];
+        copied = copied + 1u16;
+        psock.buf.left = psock.buf.left - 1u16;
+    }
+    if copied < psock.readlen {
+        psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (copied as usize)) as &byte;
+        psock.readlen = psock.readlen - copied;
+        psock.lastlen = copied;
+        return PT_ENDED as byte;
+    }
+    psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (psock.readlen as usize)) as &byte;
+    psock.lastlen = psock.readlen;
+    psock.readlen = 0u16;
+    if psock_datalen(psock) == 0u16 {
+        psock.state = 0 as byte;
+        return pt_restart(&psock.psockpt);
+    }
+    psock.state = 0 as byte;
+    return PT_ENDED as byte;
+}
+
+export fn psock_readto(psock: &Psock, endmarker: byte, input: &byte, input_len: u16) byte {
+    psock_buf_setup(&psock.buf, psock.bufptr, psock.bufsize);
+    if input_len == 0u16 && psock.readlen == 0u16 {
+        psock.state = 3 as byte;
+        return PT_WAITING as byte;
+    }
+    psock.state = 2 as byte;
+    if psock.readlen == 0u16 {
+        psock.readptr = input;
+        psock.readlen = input_len;
+    }
+    var copied: u16 = 0u16;
+    while copied < psock.readlen && psock.buf.left > 0u16 {
+        const current: byte = psock.readptr[copied as usize];
+        psock.buf.ptr[copied as usize] = current;
+        psock.buf.left = psock.buf.left - 1u16;
+        copied = copied + 1u16;
+        if current == endmarker {
+            psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (copied as usize)) as &byte;
+            psock.readlen = psock.readlen - copied;
+            psock.lastlen = copied;
+            if psock_datalen(psock) == 0u16 {
+                psock.state = 0 as byte;
+                return pt_restart(&psock.psockpt);
+            }
+            psock.state = 0 as byte;
+            return PT_ENDED as byte;
+        }
+    }
+    psock.lastlen = copied;
+    if copied < psock.readlen {
+        psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (copied as usize)) as &byte;
+        psock.readlen = psock.readlen - copied;
+        return PT_WAITING as byte;
+    }
+    psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (psock.readlen as usize)) as &byte;
+    psock.readlen = 0u16;
+    return PT_WAITING as byte;
+}
+
+export fn timer_set(t: &Timer, interval: u64, now: u64) void {
+    t.interval = interval;
+    t.start = now;
+}
+
+export fn timer_reset(t: &Timer) void {
+    t.start = t.start + t.interval;
+}
+
+export fn timer_restart(t: &Timer, now: u64) void {
+    t.start = now;
+}
+
+export fn timer_expired(t: &Timer, now: u64) bool {
+    return (now - t.start) >= t.interval;
+}

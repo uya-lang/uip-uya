@@ -2,7 +2,12 @@ use std.testing;
 
 extern fn pt_init(pt: &Pt) void;
 extern fn pt_wait_until(pt: &Pt, condition: bool) byte;
+extern fn pt_wait_while(pt: &Pt, condition: bool) byte;
+extern fn pt_wait_thread(pt: &Pt, status: byte) byte;
+extern fn pt_spawn(pt: &Pt, child: &Pt, status: byte) byte;
+extern fn pt_restart(pt: &Pt) byte;
 extern fn pt_yield(pt: &Pt) byte;
+extern fn pt_yield_until(pt: &Pt, condition: bool) byte;
 extern fn pt_exit(pt: &Pt) byte;
 extern fn pt_end(pt: &Pt) byte;
 extern fn pt_schedule(status: byte) bool;
@@ -14,37 +19,71 @@ extern const PT_YIELDED: i32;
 
 struct Pt {
     lc: u16,
-    yielded: bool
+    yielded: bool,
+    waiting: bool,
+    exit_requested: bool,
+    restart_requested: bool
 }
 
 test "pt_init resets local continuation and yield flag" {
-    var pt: Pt = Pt { lc: 9u16, yielded: true };
+    var pt: Pt = Pt { lc: 9u16, yielded: true, waiting: true, exit_requested: true, restart_requested: true };
     pt_init(&pt);
     try assert_eq_i32(pt.lc as i32, 0);
     try assert_eq_bool(pt.yielded, false);
 }
 
 test "pt_wait_until returns waiting until condition becomes true" {
-    var pt: Pt = Pt { lc: 0u16, yielded: false };
+    var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false };
     try assert_eq_i32(pt_wait_until(&pt, false) as i32, PT_WAITING);
+    try assert_eq_bool(pt.waiting, true);
     try assert_eq_i32(pt_wait_until(&pt, true) as i32, PT_YIELDED);
 }
 
+test "pt_wait_while mirrors inverse wait semantics" {
+    var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false };
+    try assert_eq_i32(pt_wait_while(&pt, true) as i32, PT_WAITING);
+    try assert_eq_i32(pt_wait_while(&pt, false) as i32, PT_YIELDED);
+}
+
 test "pt_yield yields once and then clears yielded state" {
-    var pt: Pt = Pt { lc: 0u16, yielded: false };
+    var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false };
     try assert_eq_i32(pt_yield(&pt) as i32, PT_YIELDED);
     try assert_eq_bool(pt.yielded, true);
     pt_init(&pt);
     try assert_eq_bool(pt.yielded, false);
 }
 
+test "pt_yield_until keeps yielding until condition becomes true" {
+    var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false };
+    try assert_eq_i32(pt_yield_until(&pt, false) as i32, PT_YIELDED);
+    try assert_eq_bool(pt.yielded, true);
+    try assert_eq_i32(pt_yield_until(&pt, true) as i32, PT_WAITING);
+    try assert_eq_bool(pt.yielded, false);
+}
+
 test "pt_exit and pt_end reset pt and return terminal states" {
-    var pt1: Pt = Pt { lc: 3u16, yielded: true };
+    var pt1: Pt = Pt { lc: 3u16, yielded: true, waiting: true, exit_requested: false, restart_requested: false };
     try assert_eq_i32(pt_exit(&pt1) as i32, PT_EXITED);
     try assert_eq_i32(pt1.lc as i32, 0);
-    var pt2: Pt = Pt { lc: 4u16, yielded: true };
+    var pt2: Pt = Pt { lc: 4u16, yielded: true, waiting: true, exit_requested: false, restart_requested: false };
     try assert_eq_i32(pt_end(&pt2) as i32, PT_ENDED);
     try assert_eq_i32(pt2.lc as i32, 0);
+}
+
+test "pt_wait_thread and pt_spawn follow child scheduling state" {
+    var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false };
+    var child: Pt = Pt { lc: 7u16, yielded: true, waiting: true, exit_requested: true, restart_requested: true };
+    try assert_eq_i32(pt_wait_thread(&pt, (PT_WAITING as! byte).value) as i32, PT_WAITING);
+    try assert_eq_i32(pt_wait_thread(&pt, (PT_ENDED as! byte).value) as i32, PT_YIELDED);
+    try assert_eq_i32(pt_spawn(&pt, &child, (PT_WAITING as! byte).value) as i32, PT_WAITING);
+    try assert_eq_i32(child.lc as i32, 0);
+}
+
+test "pt_restart resets pt and returns waiting" {
+    var pt: Pt = Pt { lc: 5u16, yielded: true, waiting: true, exit_requested: true, restart_requested: false };
+    try assert_eq_i32(pt_restart(&pt) as i32, PT_WAITING);
+    try assert_eq_i32(pt.lc as i32, 0);
+    try assert_eq_bool(pt.restart_requested, true);
 }
 
 test "pt_schedule is true only for waiting status" {

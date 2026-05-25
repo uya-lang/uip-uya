@@ -23,7 +23,7 @@ extern const UIP_TIME_WAIT: i32;
 extern const UIP_CLOSED: i32;
 extern const UIP_TCP_MSS: i32;
 extern const UIP_TTL: i32;
-extern const UIP_RTO: i32;
+extern fn uip_const_rto() i32;
 
 struct Timer {
     start: u64,
@@ -284,7 +284,7 @@ test "uip_connect allocates closed slot and initializes syn state" {
     try assert_eq_i32(state.conns[0].initialmss as i32, UIP_TCP_MSS);
     try assert_eq_i32(state.conns[0].len as i32, 1);
     try assert_eq_i32(state.conns[0].timer as i32, 1);
-    try assert_eq_i32(state.conns[0].rto as i32, UIP_RTO);
+    try assert_eq_i32(state.conns[0].rto as i32, uip_const_rto());
     try assert_eq_i32(state.conns[0].sv as i32, 16);
     try assert_eq_i32(ntohs(state.conns[0].lport) as i32, 1);
     try assert_eq_i32(state.conns[0].rport as i32, htons(80u16) as i32);

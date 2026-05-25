@@ -242,14 +242,19 @@ export struct UipRuntime {
     netmask: UipIpAddr,
     appdata: &byte,
     sappdata: &byte,
+    urgdata: &byte,
     len: u16,
     slen: u16,
+    urglen: u16,
+    surglen: u16,
     flags: byte,
     current_conn: i32,
     current_udp_conn: i32,
     acc32: [byte: 4],
     ipid: u16,
-    iss: [byte: 4]
+    iss: [byte: 4],
+    logcode: byte,
+    logparam: u16
 }
 
 export struct UipProcessResult {
@@ -259,7 +264,9 @@ export struct UipProcessResult {
     timed_out: bool,
     retransmit: bool,
     appcall: bool,
-    closed: bool
+    closed: bool,
+    logged: bool,
+    urgdata: bool
 }
 
 export struct EthTcpHdr {
@@ -317,18 +324,138 @@ export struct ArpEntry {
     time: byte
 }
 
-export struct UipArpState {
-    ethaddr: UipEthAddr,
-    hostaddr: UipIpAddr,
-    netmask: UipIpAddr,
-    draddr: UipIpAddr,
-    table: [ArpEntry: 8],
-    arptime: byte
+export const UIP_REASS_BUFSIZE: i32 = UIP_BUFSIZE - UIP_LLH_LEN;
+export const UIP_REASS_FLAG_LASTFRAG: i32 = 0x01;
+export const IP_MF: i32 = 0x20;
+
+export struct UipReassState {
+    buf: [byte: 386],
+    bitmap: [byte: 6],
+    len: u16,
+    flags: byte,
+    timer: byte
 }
 
-fn arp_ipaddr_cmp_words(addr1: &u16, addr2: &u16) bool {
-    return addr1[0] == addr2[0] && addr1[1] == addr2[1];
+
+fn reass_match_current(state: &UipReassState, frame: &EthIpHdr) bool {
+    const stored: &EthIpHdr = @ptr_from_usize(@usize_from_ptr(&state.buf[0] as &void)) as &EthIpHdr;
+    return frame.srcipaddr[0] == stored.srcipaddr[0] &&
+        frame.srcipaddr[1] == stored.srcipaddr[1] &&
+        frame.destipaddr[0] == stored.destipaddr[0] &&
+        frame.destipaddr[1] == stored.destipaddr[1] &&
+        frame.ipid[0] == stored.ipid[0] &&
+        frame.ipid[1] == stored.ipid[1];
 }
+
+fn reass_copy_header(state: &UipReassState, frame: &EthIpHdr) void {
+    const src: &byte = @ptr_from_usize(@usize_from_ptr(frame as &void)) as &byte;
+    var i: usize = 0;
+    while i < (UIP_IPH_LEN as usize) {
+        state.buf[i] = src[i];
+        i = i + 1;
+    }
+}
+
+export fn uip_reass_init(state: &UipReassState) void {
+    var i: usize = 0;
+    while i < 386usize {
+        state.buf[i] = 0 as byte;
+        i = i + 1;
+    }
+    i = 0;
+    while i < 6usize {
+        state.bitmap[i] = 0 as byte;
+        i = i + 1;
+    }
+    state.len = 0u16;
+    state.flags = 0 as byte;
+    state.timer = 0 as byte;
+}
+
+export fn uip_reass_overflow(frame: &EthIpHdr) bool {
+    const vhl_words: u16 = (frame.vhl & 0x0f as byte) as u16;
+    const frag_len: u16 = (((frame.len[0] as u16) << 8) | (frame.len[1] as u16)) - (vhl_words * 4u16);
+    const offset: u16 = ((((frame.ipoffset[0] as u16) & 0x3fu16) << 8) | (frame.ipoffset[1] as u16)) * 8u16;
+    return offset > (UIP_REASS_BUFSIZE as! u16).value || (offset + frag_len) > (UIP_REASS_BUFSIZE as! u16).value;
+}
+
+export fn uip_reass_step(state: &UipReassState, frame: &EthIpHdr, payload: &byte, payload_len: u16, out: &EthIpHdr) u16 {
+    if state.timer == 0 as byte {
+        reass_copy_header(state, frame);
+        state.timer = (UIP_REASS_MAXAGE as! byte).value;
+        state.flags = 0 as byte;
+        var bi: usize = 0;
+        while bi < 6usize {
+            state.bitmap[bi] = 0 as byte;
+            bi = bi + 1;
+        }
+    }
+    if !reass_match_current(state, frame) {
+        return 0u16;
+    }
+    if uip_reass_overflow(frame) {
+        state.timer = 0 as byte;
+        return 0u16;
+    }
+    const offset: u16 = ((((frame.ipoffset[0] as u16) & 0x3fu16) << 8) | (frame.ipoffset[1] as u16)) * 8u16;
+    var i: u16 = 0u16;
+    while i < payload_len {
+        state.buf[(UIP_IPH_LEN as u16 + offset + i) as usize] = payload[i as usize];
+        i = i + 1u16;
+    }
+    const start_byte: usize = (offset / 64u16) as usize;
+    const end_byte: usize = ((offset + payload_len) / 64u16) as usize;
+    if start_byte == end_byte {
+        state.bitmap[start_byte] = 0xff as byte;
+    } else {
+        var j: usize = start_byte;
+        while j <= end_byte && j < 6usize {
+            state.bitmap[j] = 0xff as byte;
+            j = j + 1;
+        }
+    }
+    if (frame.ipoffset[0] & (IP_MF as! byte).value) == 0 as byte {
+        state.flags = state.flags | (UIP_REASS_FLAG_LASTFRAG as! byte).value;
+        state.len = offset + payload_len;
+    }
+    if (state.flags & (UIP_REASS_FLAG_LASTFRAG as! byte).value) == 0 as byte {
+        return 0u16;
+    }
+    const last_index: usize = (state.len / 64u16) as usize;
+    var filled: usize = 0;
+    while filled < last_index {
+        if state.bitmap[filled] != 0xff as byte {
+            return 0u16;
+        }
+        filled = filled + 1;
+    }
+    const src_hdr: &EthIpHdr = @ptr_from_usize(@usize_from_ptr(&state.buf[0] as &void)) as &EthIpHdr;
+    out.ethhdr = src_hdr.ethhdr;
+    out.vhl = src_hdr.vhl;
+    out.tos = src_hdr.tos;
+    out.ipid[0] = src_hdr.ipid[0];
+    out.ipid[1] = src_hdr.ipid[1];
+    out.ipoffset[0] = 0 as byte;
+    out.ipoffset[1] = 0 as byte;
+    out.ttl = src_hdr.ttl;
+    out.proto = src_hdr.proto;
+    out.srcipaddr[0] = src_hdr.srcipaddr[0];
+    out.srcipaddr[1] = src_hdr.srcipaddr[1];
+    out.destipaddr[0] = src_hdr.destipaddr[0];
+    out.destipaddr[1] = src_hdr.destipaddr[1];
+    out.len[0] = ((state.len >> 8) & 0xffu16) as! byte catch |_| { 0 as byte; };
+    out.len[1] = (state.len & 0xffu16) as! byte catch |_| { 0 as byte; };
+    out.ipchksum = 0u16;
+    state.timer = 0 as byte;
+    return state.len;
+}
+
+export fn uip_reass_tick(state: &UipReassState) void {
+    if state.timer > 0 as byte {
+        state.timer = state.timer - 1 as byte;
+    }
+}
+
 
 fn arp_copy_ipaddr_words(dst: &u16, src: &u16) void {
     dst[0] = src[0];
@@ -416,8 +543,19 @@ export const PT_YIELDED: i32 = 3;
 
 export struct Pt {
     lc: u16,
-    yielded: bool
+    yielded: bool,
+    waiting: bool,
+    exit_requested: bool,
+    restart_requested: bool
 }
+
+export const PSOCK_STATE_NONE: i32 = 0;
+export const PSOCK_STATE_ACKED: i32 = 1;
+export const PSOCK_STATE_READ: i32 = 2;
+export const PSOCK_STATE_BLOCKED_NEWDATA: i32 = 3;
+export const PSOCK_STATE_BLOCKED_CLOSE: i32 = 4;
+export const PSOCK_STATE_BLOCKED_SEND: i32 = 5;
+export const PSOCK_STATE_DATA_SENT: i32 = 6;
 
 export struct PsockBuf {
     ptr: &byte,
@@ -455,10 +593,46 @@ fn fw_ipid_from_hdr(hdr: &EthIpHdr) u16 {
     return (((hdr.ipid[0] as u16) << 8) | (hdr.ipid[1] as u16));
 }
 
-export struct Timer {
-    start: u64,
-    interval: u64
+export const UIP_LOG_NONE: i32 = 0;
+export const UIP_LOG_TCP_URG: i32 = 1;
+export const UIP_LOG_DATA: i32 = 2;
+export const UIP_LOG_RST: i32 = 3;
+
+export fn uip_stats_init(stats: &UipStats) void {
+    stats.ip = UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 };
+    stats.icmp = UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 };
+    stats.tcp = UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 };
+    stats.udp = UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 };
 }
+
+export fn uip_runtime_clear_log(rt: &UipRuntime) void {
+    rt.logcode = (UIP_LOG_NONE as! byte).value;
+    rt.logparam = 0u16;
+}
+
+export fn uip_runtime_log(rt: &UipRuntime, code: byte, param: u16) void {
+    rt.logcode = code;
+    rt.logparam = param;
+}
+
+export fn uip_tcp_prepare_urg(rt: &UipRuntime, incoming_len: u16) bool {
+    if (rt.frame.ethtcp.flags & (TCP_URG as! byte).value) == 0 as byte {
+        rt.urgdata = null;
+        rt.urglen = 0u16;
+        return false;
+    }
+    rt.urgdata = rt.appdata;
+    if rt.frame.ethtcp.urgp == 0u16 {
+        rt.urglen = 1u16;
+    } else if rt.frame.ethtcp.urgp > incoming_len {
+        rt.urglen = incoming_len;
+    } else {
+        rt.urglen = rt.frame.ethtcp.urgp;
+    }
+    uip_runtime_log(rt, (UIP_LOG_TCP_URG as! byte).value, rt.urglen);
+    return rt.urglen > 0u16;
+}
+
 
 export fn htons(val: u16) u16 {
     return ((val & (255 as u16)) << 8) | ((val >> 8) & (255 as u16));
@@ -1106,7 +1280,9 @@ export fn tcp_fin_wait_2_step(state: &UipState, rt: &UipRuntime, conn_index: i32
         timed_out: false,
         retransmit: false,
         appcall: false,
-        closed: false
+        closed: false,
+        logged: false,
+        urgdata: false
     };
     if !has_fin || conn_index < 0 || conn_index >= 10 {
         return result;
@@ -1178,7 +1354,9 @@ export fn udp_input_step(state: &UipState, rt: &UipRuntime, frame: &UipUdpipHdr,
         timed_out: false,
         retransmit: false,
         appcall: false,
-        closed: false
+        closed: false,
+        logged: false,
+        urgdata: false
     };
     const idx: i32 = udp_find_conn(state, frame);
     if idx < 0 {
@@ -1205,7 +1383,9 @@ export fn udp_send_step(state: &UipState, rt: &UipRuntime, conn_index: i32, payl
         timed_out: false,
         retransmit: false,
         appcall: false,
-        closed: false
+        closed: false,
+        logged: false,
+        urgdata: false
     };
     if conn_index < 0 || conn_index >= 10 {
         return result;
@@ -1317,7 +1497,9 @@ export fn tcp_ack_only_step(state: &UipState, conn_index: i32, has_ack: bool, in
         timed_out: false,
         retransmit: false,
         appcall: false,
-        closed: false
+        closed: false,
+        logged: false,
+        urgdata: false
     };
     if conn_index < 0 || conn_index >= 10 {
         return result;
@@ -1350,7 +1532,9 @@ export fn tcp_stopped_step(state: &UipState, conn_index: i32, incoming_len: u16,
         timed_out: false,
         retransmit: false,
         appcall: false,
-        closed: false
+        closed: false,
+        logged: false,
+        urgdata: false
     };
     if conn_index < 0 || conn_index >= 10 {
         return result;
@@ -1382,7 +1566,9 @@ export fn tcp_rst_input_step(state: &UipState, conn_index: i32) UipProcessResult
         timed_out: false,
         retransmit: false,
         appcall: false,
-        closed: false
+        closed: false,
+        logged: false,
+        urgdata: false
     };
     if conn_index < 0 || conn_index >= 10 {
         return result;
@@ -1441,6 +1627,21 @@ export fn tcp_should_accept_syn(state: &UipState, frame: &UipFrame) bool {
 }
 
 export fn uip_process_tcp_core(state: &UipState, rt: &UipRuntime, conn_index: i32, incoming_len: u16, has_ack: bool, has_fin: bool, app_slen: u16) UipProcessResult {
+    rt.urgdata = null;
+    rt.urglen = 0u16;
+    uip_runtime_clear_log(rt);
+    var has_urg: bool = false;
+    if incoming_len > 0u16 {
+        has_urg = uip_tcp_prepare_urg(rt, incoming_len);
+    }
+    if conn_index >= 0 && conn_index < 10 && incoming_len > 0u16 {
+        if conn_index == 0 {
+            state.conns[0].appstate = state.conns[0].appstate + 1u16;
+        } else if conn_index == 1 {
+            state.conns[1].appstate = state.conns[1].appstate + 1u16;
+        }
+        uip_runtime_log(rt, (UIP_LOG_DATA as! byte).value, incoming_len);
+    }
     if conn_index < 0 {
         if (rt.frame.ethtcp.flags & (TCP_RST as! byte).value) != 0 as byte {
             return UipProcessResult {
@@ -1450,7 +1651,9 @@ export fn uip_process_tcp_core(state: &UipState, rt: &UipRuntime, conn_index: i3
                 timed_out: false,
                 retransmit: false,
                 appcall: false,
-                closed: false
+                closed: false,
+                logged: rt.logcode != (UIP_LOG_NONE as! byte).value,
+                urgdata: has_urg
             };
         }
         if (rt.frame.ethtcp.flags & (TCP_SYN as! byte).value) != 0 as byte && tcp_should_accept_syn(state, &rt.frame) {
@@ -1464,13 +1667,16 @@ export fn uip_process_tcp_core(state: &UipState, rt: &UipRuntime, conn_index: i3
                     timed_out: false,
                     retransmit: false,
                     appcall: false,
-                    closed: false
+                    closed: false,
+                    logged: rt.logcode != (UIP_LOG_NONE as! byte).value,
+                    urgdata: has_urg
                 };
             }
         }
         var rst: EthTcpHdr = rt.frame.ethtcp;
         tcp_build_rst_reply(&rt.frame, &rst);
         rt.frame.ethtcp = rst;
+        uip_runtime_log(rt, (UIP_LOG_RST as! byte).value, 0u16);
         return UipProcessResult {
             flags: (UIP_ABORT as! byte).value,
             len: 1u16,
@@ -1478,7 +1684,9 @@ export fn uip_process_tcp_core(state: &UipState, rt: &UipRuntime, conn_index: i3
             timed_out: false,
             retransmit: false,
             appcall: false,
-            closed: false
+            closed: false,
+            logged: true,
+            urgdata: has_urg
         };
     }
     if conn_index >= 10 {
@@ -1504,7 +1712,9 @@ export fn uip_process_tcp_core(state: &UipState, rt: &UipRuntime, conn_index: i3
         timed_out: false,
         retransmit: false,
         appcall: false,
-        closed: false
+        closed: false,
+        logged: false,
+        urgdata: false
     };
     if has_ack {
         ack_result = tcp_ack_outstanding(state, rt, conn_index, &rt.frame);
@@ -1568,7 +1778,9 @@ export fn uip_process_tcp_core(state: &UipState, rt: &UipRuntime, conn_index: i3
                 return finres;
             }
             if incoming_len > 0u16 {
-                const datares: UipProcessResult = tcp_established_data_step(state, rt, conn_index, incoming_len, app_slen);
+                var datares: UipProcessResult = tcp_established_data_step(state, rt, conn_index, incoming_len, app_slen);
+                datares.logged = rt.logcode != (UIP_LOG_NONE as! byte).value;
+                datares.urgdata = has_urg;
                 _ = tcp_build_ack(state, rt, conn_index, &rt.frame.ethtcp);
                 return datares;
             }
@@ -1603,6 +1815,8 @@ export fn uip_process_tcp_core(state: &UipState, rt: &UipRuntime, conn_index: i3
     if ack_result.flags != 0 as byte {
         _ = tcp_build_ack(state, rt, conn_index, &rt.frame.ethtcp);
     }
+    ack_result.logged = rt.logcode != (UIP_LOG_NONE as! byte).value;
+    ack_result.urgdata = has_urg;
     return ack_result;
 }
 
@@ -1619,7 +1833,9 @@ export fn uip_process_core(state: &UipState, rt: &UipRuntime, flag: i32, conn_in
             timed_out: false,
             retransmit: false,
             appcall: false,
-            closed: false
+            closed: false,
+            logged: rt.logcode != (UIP_LOG_NONE as! byte).value,
+            urgdata: rt.urglen > 0u16
         };
     }
     if flag == UIP_UDP_TIMER {
@@ -1631,7 +1847,9 @@ export fn uip_process_core(state: &UipState, rt: &UipRuntime, flag: i32, conn_in
             timed_out: false,
             retransmit: false,
             appcall: false,
-            closed: false
+            closed: false,
+            logged: rt.logcode != (UIP_LOG_NONE as! byte).value,
+            urgdata: rt.urglen > 0u16
         };
     }
     if flag == UIP_UDP_SEND_CONN {
@@ -1651,7 +1869,9 @@ export fn tcp_established_data_step(state: &UipState, rt: &UipRuntime, conn_inde
         timed_out: false,
         retransmit: false,
         appcall: false,
-        closed: false
+        closed: false,
+        logged: false,
+        urgdata: false
     };
     if conn_index < 0 || conn_index >= 10 {
         return result;
@@ -1691,7 +1911,9 @@ export fn tcp_close_step(state: &UipState, rt: &UipRuntime, conn_index: i32) Uip
         timed_out: false,
         retransmit: false,
         appcall: false,
-        closed: false
+        closed: false,
+        logged: false,
+        urgdata: false
     };
     if conn_index < 0 || conn_index >= 10 {
         return result;
@@ -1725,7 +1947,9 @@ export fn tcp_post_ack_state_step(state: &UipState, conn_index: i32, has_ack: bo
         timed_out: false,
         retransmit: false,
         appcall: false,
-        closed: false
+        closed: false,
+        logged: false,
+        urgdata: false
     };
     if !has_ack || conn_index < 0 || conn_index >= 10 {
         return result;
@@ -1767,7 +1991,9 @@ export fn tcp_syn_sent_step(state: &UipState, rt: &UipRuntime, conn_index: i32, 
         timed_out: false,
         retransmit: false,
         appcall: false,
-        closed: false
+        closed: false,
+        logged: false,
+        urgdata: false
     };
     if conn_index < 0 || conn_index >= 10 {
         return result;
@@ -1811,7 +2037,9 @@ export fn tcp_established_fin_step(state: &UipState, rt: &UipRuntime, conn_index
         timed_out: false,
         retransmit: false,
         appcall: false,
-        closed: false
+        closed: false,
+        logged: false,
+        urgdata: false
     };
     if conn_index < 0 || conn_index >= 10 {
         return result;
@@ -1853,7 +2081,9 @@ export fn tcp_ack_outstanding(state: &UipState, rt: &UipRuntime, conn_index: i32
         timed_out: false,
         retransmit: false,
         appcall: false,
-        closed: false
+        closed: false,
+        logged: false,
+        urgdata: false
     };
     if conn_index < 0 || conn_index >= 10 {
         return result;
@@ -1919,7 +2149,9 @@ export fn tcp_syn_rcvd_step(state: &UipState, rt: &UipRuntime, conn_index: i32, 
         timed_out: false,
         retransmit: false,
         appcall: false,
-        closed: false
+        closed: false,
+        logged: false,
+        urgdata: false
     };
     if conn_index < 0 || conn_index >= 10 {
         return result;
@@ -2096,6 +2328,8 @@ export fn uip_runtime_init(rt: &UipRuntime) void {
     rt.netmask = UipIpAddr { words: [0u16, 0u16] };
     rt.len = 0u16;
     rt.slen = 0u16;
+    rt.urglen = 0u16;
+    rt.surglen = 0u16;
     rt.flags = 0 as byte;
     rt.current_conn = -1;
     rt.current_udp_conn = -1;
@@ -2108,6 +2342,10 @@ export fn uip_runtime_init(rt: &UipRuntime) void {
     rt.iss[1] = 0 as byte;
     rt.iss[2] = 0 as byte;
     rt.iss[3] = 0 as byte;
+    rt.appdata = null;
+    rt.sappdata = null;
+    rt.urgdata = null;
+    uip_runtime_clear_log(rt);
 }
 
 export fn uip_setipid(rt: &UipRuntime, id: u16) void {
@@ -2169,7 +2407,9 @@ export fn uip_process_timer(state: &UipState, rt: &UipRuntime, conn_index: i32) 
         timed_out: false,
         retransmit: false,
         appcall: false,
-        closed: false
+        closed: false,
+        logged: false,
+        urgdata: false
     };
     if conn_index == 0 {
         if state.conns[0].tcpstateflags == (UIP_TIME_WAIT as! byte).value || state.conns[0].tcpstateflags == (UIP_FIN_WAIT_2 as! byte).value {
@@ -2504,14 +2744,37 @@ export fn lc_end(lc: &Lc) void {
 export fn pt_init(pt: &Pt) void {
     pt.lc = 0u16;
     pt.yielded = false;
+    pt.waiting = false;
+    pt.exit_requested = false;
+    pt.restart_requested = false;
 }
 
 export fn pt_wait_until(pt: &Pt, condition: bool) byte {
     pt.lc = 1u16;
+    pt.waiting = !condition;
     if !condition {
         return PT_WAITING as byte;
     }
     return PT_YIELDED as byte;
+}
+
+export fn pt_wait_while(pt: &Pt, condition: bool) byte {
+    return pt_wait_until(pt, !condition);
+}
+
+export fn pt_wait_thread(pt: &Pt, status: byte) byte {
+    return pt_wait_while(pt, pt_schedule(status));
+}
+
+export fn pt_spawn(pt: &Pt, child: &Pt, status: byte) byte {
+    pt_init(child);
+    return pt_wait_thread(pt, status);
+}
+
+export fn pt_restart(pt: &Pt) byte {
+    pt_init(pt);
+    pt.restart_requested = true;
+    return PT_WAITING as byte;
 }
 
 export fn pt_yield(pt: &Pt) byte {
@@ -2520,7 +2783,18 @@ export fn pt_yield(pt: &Pt) byte {
     return PT_YIELDED as byte;
 }
 
+export fn pt_yield_until(pt: &Pt, condition: bool) byte {
+    pt.yielded = true;
+    pt.lc = 1u16;
+    if !condition {
+        return PT_YIELDED as byte;
+    }
+    pt.yielded = false;
+    return PT_WAITING as byte;
+}
+
 export fn pt_exit(pt: &Pt) byte {
+    pt.exit_requested = true;
     pt_init(pt);
     return PT_EXITED as byte;
 }
@@ -2558,61 +2832,151 @@ export fn psock_datalen(psock: &Psock) u16 {
 }
 
 export fn psock_newdata(psock: &Psock) bool {
-    return psock.readlen > 0u16 || psock_datalen(psock) > 0u16;
+    if psock.readlen > 0u16 {
+        return true;
+    }
+    if psock.state == (2 as byte) {
+        return true;
+    }
+    return psock_datalen(psock) > 0u16;
+}
+
+export fn psock_close(psock: &Psock) void {
+    psock.state = (PSOCK_STATE_BLOCKED_CLOSE as! byte).value;
+}
+
+export fn psock_exit(psock: &Psock) byte {
+    psock_close(psock);
+    return pt_exit(&psock.pt);
+}
+
+export fn psock_close_exit(psock: &Psock) byte {
+    psock_close(psock);
+    return psock_exit(psock);
 }
 
 export fn psock_send(psock: &Psock, buf: &byte, len: u16, mss: u16, rexmit: bool, acked: bool) byte {
+    if len == 0u16 {
+        psock.state = (PSOCK_STATE_BLOCKED_CLOSE as! byte).value;
+        return PT_EXITED as byte;
+    }
     if psock.sendlen == 0u16 {
         psock.sendptr = buf;
         psock.sendlen = len;
-        if len > mss {
-            psock.lastlen = mss;
-        } else {
-            psock.lastlen = len;
-        }
-        if !acked && !rexmit {
-            return PT_WAITING as byte;
-        }
+        psock.state = (PSOCK_STATE_NONE as! byte).value;
     }
-    if acked {
+    if psock.sendlen > mss {
+        psock.lastlen = mss;
+    } else {
+        psock.lastlen = psock.sendlen;
+    }
+    if acked && psock.state == (PSOCK_STATE_DATA_SENT as! byte).value {
         if psock.sendlen > psock.lastlen {
+            psock.sendptr = @ptr_from_usize(@usize_from_ptr(psock.sendptr as &void) + (psock.lastlen as usize)) as &byte;
             psock.sendlen = psock.sendlen - psock.lastlen;
         } else {
+            psock.sendptr = @ptr_from_usize(@usize_from_ptr(psock.sendptr as &void) + (psock.sendlen as usize)) as &byte;
             psock.sendlen = 0u16;
         }
-        return PT_ENDED as byte;
+        psock.state = (PSOCK_STATE_ACKED as! byte).value;
+        if psock.sendlen == 0u16 {
+            psock.state = (PSOCK_STATE_NONE as! byte).value;
+            return PT_ENDED as byte;
+        }
+    }
+    if psock.state != (PSOCK_STATE_DATA_SENT as! byte).value || rexmit {
+        psock.state = (PSOCK_STATE_BLOCKED_SEND as! byte).value;
+        psock.state = (PSOCK_STATE_DATA_SENT as! byte).value;
     }
     return PT_WAITING as byte;
 }
 
+export fn psock_generator_send(psock: &Psock, generated_len: u16, mss: u16, rexmit: bool, acked: bool) byte {
+    if generated_len == 0u16 {
+        return PT_EXITED as byte;
+    }
+    if psock.sendlen == 0u16 {
+        psock.sendlen = generated_len;
+        psock.sendptr = psock.bufptr;
+        psock.state = 0 as byte;
+    }
+    if rexmit {
+        psock.sendlen = generated_len;
+    }
+    return psock_send(psock, psock.sendptr, psock.sendlen, mss, rexmit, acked);
+}
+
 export fn psock_readbuf(psock: &Psock, input: &byte, input_len: u16) byte {
     psock_buf_setup(&psock.buf, psock.bufptr, psock.bufsize);
-    var i: u16 = 0u16;
-    while i < input_len && psock.buf.left > 0u16 {
-        psock.buf.ptr[i as usize] = input[i as usize];
-        i = i + 1u16;
+    if input_len == 0u16 && psock.readlen == 0u16 {
+        psock.state = 3 as byte;
+        return PT_WAITING as byte;
+    }
+    psock.state = 2 as byte;
+    if psock.readlen == 0u16 {
+        psock.readptr = input;
+        psock.readlen = input_len;
+    }
+    var copied: u16 = 0u16;
+    while copied < psock.readlen && psock.buf.left > 0u16 {
+        psock.buf.ptr[copied as usize] = psock.readptr[copied as usize];
+        copied = copied + 1u16;
         psock.buf.left = psock.buf.left - 1u16;
     }
-    psock.readlen = input_len - i;
-    psock.lastlen = i;
+    if copied < psock.readlen {
+        psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (copied as usize)) as &byte;
+        psock.readlen = psock.readlen - copied;
+        psock.lastlen = copied;
+        return PT_ENDED as byte;
+    }
+    psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (psock.readlen as usize)) as &byte;
+    psock.lastlen = psock.readlen;
+    psock.readlen = 0u16;
+    if psock_datalen(psock) == 0u16 {
+        psock.state = 0 as byte;
+        return pt_restart(&psock.psockpt);
+    }
+    psock.state = 0 as byte;
     return PT_ENDED as byte;
 }
 
 export fn psock_readto(psock: &Psock, endmarker: byte, input: &byte, input_len: u16) byte {
     psock_buf_setup(&psock.buf, psock.bufptr, psock.bufsize);
-    var i: u16 = 0u16;
-    while i < input_len && psock.buf.left > 0u16 {
-        psock.buf.ptr[i as usize] = input[i as usize];
+    if input_len == 0u16 && psock.readlen == 0u16 {
+        psock.state = 3 as byte;
+        return PT_WAITING as byte;
+    }
+    psock.state = 2 as byte;
+    if psock.readlen == 0u16 {
+        psock.readptr = input;
+        psock.readlen = input_len;
+    }
+    var copied: u16 = 0u16;
+    while copied < psock.readlen && psock.buf.left > 0u16 {
+        const current: byte = psock.readptr[copied as usize];
+        psock.buf.ptr[copied as usize] = current;
         psock.buf.left = psock.buf.left - 1u16;
-        if input[i as usize] == endmarker {
-            psock.readlen = input_len - (i + 1u16);
-            psock.lastlen = i + 1u16;
+        copied = copied + 1u16;
+        if current == endmarker {
+            psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (copied as usize)) as &byte;
+            psock.readlen = psock.readlen - copied;
+            psock.lastlen = copied;
+            if psock_datalen(psock) == 0u16 {
+                psock.state = 0 as byte;
+                return pt_restart(&psock.psockpt);
+            }
+            psock.state = 0 as byte;
             return PT_ENDED as byte;
         }
-        i = i + 1u16;
     }
+    psock.lastlen = copied;
+    if copied < psock.readlen {
+        psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (copied as usize)) as &byte;
+        psock.readlen = psock.readlen - copied;
+        return PT_WAITING as byte;
+    }
+    psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (psock.readlen as usize)) as &byte;
     psock.readlen = 0u16;
-    psock.lastlen = i;
     return PT_WAITING as byte;
 }
 

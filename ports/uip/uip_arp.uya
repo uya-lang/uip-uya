@@ -1,0 +1,161 @@
+// ARP split from uiplib.uya.
+
+export const UIP_ETHTYPE_IP: i32 = 0x0800;
+export const UIP_ETHTYPE_ARP: i32 = 0x0806;
+export const ARP_REQUEST: i32 = 1;
+export const ARP_REPLY: i32 = 2;
+
+export struct UipEthHdr { dest: UipEthAddr, src: UipEthAddr, type: u16 }
+export struct UipEthAddr { addr: [byte: 6] }
+export struct UipIpAddr { words: [u16: 2] }
+export struct ArpEntry { ipaddr: [u16: 2], ethaddr: UipEthAddr, time: byte }
+export struct UipArpState { ethaddr: UipEthAddr, hostaddr: UipIpAddr, netmask: UipIpAddr, draddr: UipIpAddr, table: [ArpEntry: 8], arptime: byte }
+export struct ArpHdr { ethhdr: UipEthHdr, hwtype: u16, protocol: u16, hwlen: byte, protolen: byte, opcode: u16, shwaddr: UipEthAddr, sipaddr: [u16: 2], dhwaddr: UipEthAddr, dipaddr: [u16: 2] }
+export struct EthIpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2] }
+export struct EthTcpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, seqno: [byte: 4], ackno: [byte: 4], tcpoffset: byte, flags: byte, wnd: [byte: 2], tcpchksum: u16, urgp: u16, optdata: [byte: 4] }
+export struct EthUdpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, udplen: u16, udpchksum: u16 }
+export struct UipFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
+
+export fn htons(val: u16) u16 {
+    return ((val << 8) | (val >> 8));
+}
+
+export fn uip_ipaddr(a: byte, b: byte, c: byte, d: byte) UipIpAddr {
+    return UipIpAddr { words: [htons((((a as u16) << 8u16) | (b as u16))), htons((((c as u16) << 8u16) | (d as u16)))] };
+}
+
+fn arp_copy_ipaddr_words(dst: &u16, src: &u16) void {
+    dst[0] = src[0];
+    dst[1] = src[1];
+}
+
+fn arp_copy_ethaddr(dst: &UipEthAddr, src: &UipEthAddr) void {
+    dst.addr[0] = src.addr[0];
+    dst.addr[1] = src.addr[1];
+    dst.addr[2] = src.addr[2];
+    dst.addr[3] = src.addr[3];
+    dst.addr[4] = src.addr[4];
+    dst.addr[5] = src.addr[5];
+}
+
+fn arp_ipaddr_cmp_words(addr1: &u16, addr2: &u16) bool {
+    return addr1[0] == addr2[0] && addr1[1] == addr2[1];
+}
+
+fn uip_ipaddr_maskcmp(addr1: &UipIpAddr, addr2: &UipIpAddr, mask: &UipIpAddr) bool {
+    return (addr1.words[0] & mask.words[0]) == (addr2.words[0] & mask.words[0]) &&
+        (addr1.words[1] & mask.words[1]) == (addr2.words[1] & mask.words[1]);
+}
+
+export fn uip_setethaddr(state: &UipArpState, eaddr: &UipEthAddr) void {
+    arp_copy_ethaddr(&state.ethaddr, eaddr);
+}
+
+export fn uip_arp_init(state: &UipArpState) void {
+    var i: usize = 0;
+    while i < 8usize {
+        state.table[i].ipaddr[0] = 0u16;
+        state.table[i].ipaddr[1] = 0u16;
+        state.table[i].time = 0 as byte;
+        i = i + 1;
+    }
+    state.arptime = 0 as byte;
+}
+
+export fn uip_arp_timer(state: &UipArpState) void {
+    state.arptime = state.arptime + 1 as byte;
+    var i: usize = 0;
+    while i < 8usize {
+        if (state.table[i].ipaddr[0] != 0u16 || state.table[i].ipaddr[1] != 0u16) && state.table[i].time == 0 as byte {
+            state.table[i].ipaddr[0] = 0u16;
+            state.table[i].ipaddr[1] = 0u16;
+        }
+        i = i + 1;
+    }
+}
+
+export fn uip_arp_update(state: &UipArpState, ipaddr: &u16, ethaddr: &UipEthAddr) void {
+    var i: usize = 0;
+    var c: usize = 0;
+    while c < 8usize {
+        if arp_ipaddr_cmp_words(&state.table[c].ipaddr[0], ipaddr) {
+            arp_copy_ethaddr(&state.table[c].ethaddr, ethaddr);
+            state.table[c].time = state.arptime;
+            return;
+        }
+        c = c + 1;
+    }
+    i = 0;
+    while i < 8usize {
+        if state.table[i].ipaddr[0] == 0u16 && state.table[i].ipaddr[1] == 0u16 {
+            arp_copy_ipaddr_words(&state.table[i].ipaddr[0], ipaddr);
+            arp_copy_ethaddr(&state.table[i].ethaddr, ethaddr);
+            state.table[i].time = state.arptime;
+            return;
+        }
+        i = i + 1;
+    }
+    arp_copy_ipaddr_words(&state.table[0].ipaddr[0], ipaddr);
+    arp_copy_ethaddr(&state.table[0].ethaddr, ethaddr);
+    state.table[0].time = state.arptime;
+}
+
+export fn uip_arp_arpin(state: &UipArpState, buf: &ArpHdr, len: &u16) void {
+    if arp_ipaddr_cmp_words(&buf.dipaddr[0], &state.hostaddr.words[0]) {
+        uip_arp_update(state, &buf.sipaddr[0], &buf.shwaddr);
+        if buf.opcode == htons(ARP_REQUEST as u16) {
+            arp_copy_ethaddr(&buf.ethhdr.dest, &buf.shwaddr);
+            arp_copy_ethaddr(&buf.ethhdr.src, &state.ethaddr);
+            buf.ethhdr.type = htons(UIP_ETHTYPE_ARP as u16);
+            buf.opcode = htons(ARP_REPLY as u16);
+            arp_copy_ethaddr(&buf.dhwaddr, &buf.shwaddr);
+            arp_copy_ethaddr(&buf.shwaddr, &state.ethaddr);
+            arp_copy_ipaddr_words(&buf.dipaddr[0], &buf.sipaddr[0]);
+            arp_copy_ipaddr_words(&buf.sipaddr[0], &state.hostaddr.words[0]);
+            *len = (@size_of(ArpHdr) as! u16).value;
+            return;
+        }
+    }
+    *len = 0u16;
+}
+
+export fn uip_arp_out(state: &UipArpState, frame: &UipFrame, len: &u16) void {
+    const dst: UipIpAddr = UipIpAddr { words: [frame.ethip.destipaddr[0], frame.ethip.destipaddr[1]] };
+    var lookup: UipIpAddr = dst;
+    if !uip_ipaddr_maskcmp(&dst, &state.hostaddr, &state.netmask) {
+        lookup = state.draddr;
+    }
+    var i: usize = 0;
+    while i < 8usize {
+        if arp_ipaddr_cmp_words(&state.table[i].ipaddr[0], &lookup.words[0]) {
+            arp_copy_ethaddr(&frame.ethip.ethhdr.dest, &state.table[i].ethaddr);
+            arp_copy_ethaddr(&frame.ethip.ethhdr.src, &state.ethaddr);
+            frame.ethip.ethhdr.type = htons(UIP_ETHTYPE_IP as u16);
+            return;
+        }
+        i = i + 1;
+    }
+    frame.arp.ethhdr.type = htons(UIP_ETHTYPE_ARP as u16);
+    frame.arp.hwtype = htons(1u16);
+    frame.arp.protocol = htons(UIP_ETHTYPE_IP as u16);
+    frame.arp.hwlen = 6 as byte;
+    frame.arp.protolen = 4 as byte;
+    frame.arp.opcode = htons(ARP_REQUEST as u16);
+    arp_copy_ethaddr(&frame.arp.shwaddr, &state.ethaddr);
+    arp_copy_ipaddr_words(&frame.arp.sipaddr[0], &state.hostaddr.words[0]);
+    frame.arp.dhwaddr.addr[0] = 0 as byte;
+    frame.arp.dhwaddr.addr[1] = 0 as byte;
+    frame.arp.dhwaddr.addr[2] = 0 as byte;
+    frame.arp.dhwaddr.addr[3] = 0 as byte;
+    frame.arp.dhwaddr.addr[4] = 0 as byte;
+    frame.arp.dhwaddr.addr[5] = 0 as byte;
+    arp_copy_ipaddr_words(&frame.arp.dipaddr[0], &lookup.words[0]);
+    frame.arp.ethhdr.dest.addr[0] = 0xff as byte;
+    frame.arp.ethhdr.dest.addr[1] = 0xff as byte;
+    frame.arp.ethhdr.dest.addr[2] = 0xff as byte;
+    frame.arp.ethhdr.dest.addr[3] = 0xff as byte;
+    frame.arp.ethhdr.dest.addr[4] = 0xff as byte;
+    frame.arp.ethhdr.dest.addr[5] = 0xff as byte;
+    arp_copy_ethaddr(&frame.arp.ethhdr.src, &state.ethaddr);
+    *len = (@size_of(ArpHdr) as! u16).value;
+}

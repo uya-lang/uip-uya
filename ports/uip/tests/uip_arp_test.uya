@@ -32,8 +32,8 @@ test "uip_arp_init clears arp table and timer" {
 
 test "uip_arp_timer expires old entries" {
     var arp: UipArpState = UipArpState { ethaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, hostaddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, time: 0 as byte }: 8], arptime: 119 as byte };
-    arp.table[0].ipaddr = [1u16,2u16]; arp.table[0].time = 0 as byte;
-    arp.table[1].ipaddr = [3u16,4u16]; arp.table[1].time = 119 as byte;
+    arp.table[0].ipaddr[0] = 1u16; arp.table[0].ipaddr[1] = 2u16; arp.table[0].time = 0 as byte;
+    arp.table[1].ipaddr[0] = 3u16; arp.table[1].ipaddr[1] = 4u16; arp.table[1].time = 119 as byte;
     uip_arp_timer(&arp);
     try assert_eq_i32(arp.arptime as i32, 120);
     try assert_eq_i32(arp.table[0].ipaddr[0] as i32, 0);
@@ -50,7 +50,7 @@ test "uip_setethaddr copies all mac bytes" {
 
 test "uip_arp_update refreshes existing entry" {
     var arp: UipArpState = UipArpState { ethaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, hostaddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, time: 0 as byte }: 8], arptime: 7 as byte };
-    arp.table[0].ipaddr = [1u16,2u16]; arp.table[0].ethaddr.addr[0] = 9 as byte;
+    arp.table[0].ipaddr[0] = 1u16; arp.table[0].ipaddr[1] = 2u16; arp.table[0].ethaddr.addr[0] = 9 as byte;
     const mac: UipEthAddr = UipEthAddr { addr: [1 as byte,2 as byte,3 as byte,4 as byte,5 as byte,6 as byte] };
     var ip: [u16: 2] = [1u16,2u16];
     uip_arp_update(&arp, &ip[0], &mac);
