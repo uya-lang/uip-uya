@@ -195,7 +195,8 @@ struct UipRuntime {
     ipid: u16,
     iss: [byte: 4],
     logcode: byte,
-    logparam: u16
+    logparam: u16,
+    stats: &UipStats
 }
 
 struct UipProcessResult {
@@ -283,6 +284,10 @@ struct UipState {
     len: u16,
     lastport: u16
 }
+
+struct UipStatsBlock { drop: u16, recv: u16, sent: u16, a: u16, b: u16, c: u16, d: u16, e: u16, f: u16 }
+struct UipStatsUdpBlock { drop: u16, recv: u16, sent: u16, chkerr: u16 }
+struct UipStats { ip: UipStatsBlock, icmp: UipStatsBlock, tcp: UipStatsBlock, udp: UipStatsUdpBlock }
 
 struct Timer {
     start: u64,
@@ -395,7 +400,8 @@ fn make_runtime() UipRuntime {
         ipid: 0u16,
         iss: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
         logcode: 0 as byte,
-        logparam: 0u16
+        logparam: 0u16,
+        stats: &UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } }
     };
     return rt;
 }
@@ -435,6 +441,218 @@ fn make_state() UipState {
     return state;
 }
 
+test "tcp_established_data_step drops newdata when stopped but still updates window" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = ((UIP_ESTABLISHED | UIP_STOPPED) as! byte).value;
+    state.conns[0].initialmss = 10u16;
+    state.conns[0].mss = 10u16;
+    state.conns[0].rcv_nxt[3] = 4 as byte;
+    rt.frame.ethtcp.wnd[0] = 0 as byte;
+    rt.frame.ethtcp.wnd[1] = 6 as byte;
+    const result: UipProcessResult = tcp_established_data_step(&state, &rt, 0, 3u16, 0u16);
+    try assert_eq_i32(result.flags as i32, 0);
+    try assert_eq_i32(state.conns[0].rcv_nxt[3] as i32, 4);
+    try assert_eq_i32(state.conns[0].mss as i32, 6);
+}
+
+test "uip_process_tcp_core stopped ack only still returns ackdata" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = ((UIP_ESTABLISHED | UIP_STOPPED) as! byte).value;
+    const result: UipProcessResult = uip_process_tcp_core(&state, &rt, 0, 0u16, true, false, 0u16);
+    try assert_eq_i32(result.flags as i32, UIP_ACKDATA);
+}
+
+test "tcp_established_data_step acked app send replaces outstanding length with clamped app_slen" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    state.conns[0].initialmss = 10u16;
+    state.conns[0].mss = 10u16;
+    state.conns[0].len = 4u16;
+    rt.flags = (UIP_ACKDATA as! byte).value;
+    rt.frame.ethtcp.wnd[0] = 0 as byte;
+    rt.frame.ethtcp.wnd[1] = 6 as byte;
+    const result: UipProcessResult = tcp_established_data_step(&state, &rt, 0, 0u16, 9u16);
+    try assert_eq_i32(result.flags as i32, UIP_ACKDATA);
+    try assert_eq_i32(state.conns[0].len as i32, 6);
+    try assert_eq_i32(result.len as i32, 6);
+}
+
+test "tcp_established_data_step with outstanding data keeps prior send length" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    state.conns[0].initialmss = 10u16;
+    state.conns[0].mss = 10u16;
+    state.conns[0].len = 4u16;
+    rt.frame.ethtcp.wnd[0] = 0 as byte;
+    rt.frame.ethtcp.wnd[1] = 8 as byte;
+    const result: UipProcessResult = tcp_established_data_step(&state, &rt, 0, 2u16, 7u16);
+    try assert_eq_i32(result.flags as i32, UIP_NEWDATA);
+    try assert_eq_i32(state.conns[0].len as i32, 4);
+    try assert_eq_i32(result.len as i32, 4);
+}
+
+test "tcp_established_data_step advances rcv_nxt and clamps mss to window" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    state.conns[0].initialmss = 10u16;
+    state.conns[0].mss = 10u16;
+    state.conns[0].rcv_nxt[3] = 4 as byte;
+    rt.frame.ethtcp.wnd[0] = 0 as byte;
+    rt.frame.ethtcp.wnd[1] = 6 as byte;
+    const result: UipProcessResult = tcp_established_data_step(&state, &rt, 0, 3u16, 0u16);
+    try assert_eq_i32(result.flags as i32, UIP_NEWDATA);
+    try assert_eq_i32(state.conns[0].rcv_nxt[3] as i32, 7);
+    try assert_eq_i32(state.conns[0].mss as i32, 6);
+}
+
+test "tcp_established_data_step uses initialmss on zero window and schedules app send" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    state.conns[0].initialmss = 10u16;
+    state.conns[0].mss = 10u16;
+    rt.flags = (UIP_ACKDATA as! byte).value;
+    rt.frame.ethtcp.wnd[0] = 0 as byte;
+    rt.frame.ethtcp.wnd[1] = 0 as byte;
+    const result: UipProcessResult = tcp_established_data_step(&state, &rt, 0, 0u16, 12u16);
+    try assert_eq_bool(result.appcall, true);
+    try assert_eq_i32(result.flags as i32, UIP_ACKDATA);
+    try assert_eq_i32(state.conns[0].mss as i32, 10);
+    try assert_eq_i32(state.conns[0].len as i32, 10);
+    try assert_eq_i32(result.len as i32, 10);
+    try assert_eq_i32(rt.stats.tcp.sent as i32, 1);
+}
+
+test "uip_process_tcp_core established data plus fin closes connection" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    state.conns[0].rcv_nxt[3] = 1 as byte;
+    rt.frame.ethtcp.seqno[3] = 1 as byte;
+    const result: UipProcessResult = uip_process_tcp_core(&state, &rt, 0, 2u16, false, true, 0u16);
+    try assert_eq_i32(result.flags as i32, UIP_CLOSE | UIP_NEWDATA);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_LAST_ACK);
+    try assert_eq_i32(rt.stats.tcp.sent as i32, 1);
+}
+
+test "uip_process_timer closes fin_wait_2 when timeout reaches limit" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_FIN_WAIT_2 as! byte).value;
+    state.conns[0].timer = ((UIP_TIME_WAIT_TIMEOUT - 1) as! byte).value;
+    const result: UipProcessResult = uip_process_timer(&state, &rt, 0);
+    try assert_eq_bool(result.closed, true);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_CLOSED);
+}
+
+test "uip_process_timer closes time_wait when timer reaches timeout" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_TIME_WAIT as! byte).value;
+    state.conns[0].timer = ((UIP_TIME_WAIT_TIMEOUT - 1) as! byte).value;
+    const result: UipProcessResult = uip_process_timer(&state, &rt, 0);
+    try assert_eq_bool(result.closed, true);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_CLOSED);
+}
+
+test "tcp_established_fin_with_outstanding_data_drops" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    state.conns[0].len = 3u16;
+    state.conns[0].rcv_nxt[3] = 1 as byte;
+    rt.frame.ethtcp.seqno[3] = 1 as byte;
+    const result: UipProcessResult = uip_process_tcp_core(&state, &rt, 0, 0u16, false, true, 0u16);
+    try assert_eq_i32(result.len as i32, 0);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_ESTABLISHED);
+}
+
+test "tcp_data_len subtracts ip and tcp header lengths" {
+    var state: UipState = make_state();
+    _ = state;
+    var rt: UipRuntime = make_runtime();
+    rt.frame.ethtcp.tcpoffset = 0x60 as byte;
+    try assert_eq_i32(tcp_data_len(&rt.frame, 44u16) as i32, 0);
+    try assert_eq_i32(tcp_data_len(&rt.frame, 48u16) as i32, 4);
+}
+
+test "tcp_seq_matches requires exact rcv_nxt for data segments" {
+    var state: UipState = make_state();
+    state.conns[0].rcv_nxt[0] = 0 as byte;
+    state.conns[0].rcv_nxt[1] = 0 as byte;
+    state.conns[0].rcv_nxt[2] = 0 as byte;
+    state.conns[0].rcv_nxt[3] = 9 as byte;
+    var rt: UipRuntime = make_runtime();
+    rt.frame.ethtcp.seqno[3] = 9 as byte;
+    try assert_eq_bool(tcp_seq_matches(&state.conns[0], &rt.frame, 3u16), true);
+    rt.frame.ethtcp.seqno[3] = 8 as byte;
+    try assert_eq_bool(tcp_seq_matches(&state.conns[0], &rt.frame, 3u16), false);
+}
+
+test "uip_process_tcp_core sends ack on sequence mismatch with data" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    state.conns[0].lport = htons(80u16);
+    state.conns[0].rport = htons(1234u16);
+    state.conns[0].ripaddr = uip_ipaddr(10,0,0,1);
+    state.conns[0].snd_nxt[3] = 7 as byte;
+    state.conns[0].rcv_nxt[3] = 9 as byte;
+    rt.hostaddr = uip_ipaddr(10,0,0,2);
+    rt.frame.ethtcp.seqno[3] = 8 as byte;
+    rt.frame.ethtcp.flags = (TCP_ACK as! byte).value;
+    const result: UipProcessResult = uip_process_tcp_core(&state, &rt, 0, 3u16, true, false, 0u16);
+    try assert_eq_i32(result.len as i32, 1);
+    try assert_eq_i32(rt.frame.ethtcp.flags as i32, TCP_ACK);
+    try assert_eq_i32(rt.frame.ethtcp.ackno[3] as i32, 9);
+    try assert_eq_i32(rt.stats.tcp.sent as i32, 1);
+}
+
+test "uip_process_timer retransmits outstanding data on expiry" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    state.conns[0].len = 12u16;
+    state.conns[0].timer = 0 as byte;
+    state.conns[0].rto = 3 as byte;
+    state.conns[0].nrtx = 0 as byte;
+    const result: UipProcessResult = uip_process_timer(&state, &rt, 0);
+    try assert_eq_bool(result.retransmit, true);
+    try assert_eq_i32(result.flags as i32, UIP_REXMIT);
+    try assert_eq_i32(state.conns[0].nrtx as i32, 1);
+    try assert_eq_i32(state.conns[0].timer as i32, 3);
+}
+
+test "uip_process_timer times out after too many retransmissions" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    state.conns[0].len = 4u16;
+    state.conns[0].timer = 0 as byte;
+    state.conns[0].rto = 2 as byte;
+    state.conns[0].nrtx = 4 as byte;
+    const result: UipProcessResult = uip_process_timer(&state, &rt, 0);
+    try assert_eq_bool(result.timed_out, true);
+    try assert_eq_bool(result.closed, true);
+    try assert_eq_i32(result.flags as i32, UIP_TIMEDOUT);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_CLOSED);
+}
+
+test "uip_process_timer closes time_wait when timer reaches zero" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_TIME_WAIT as! byte).value;
+    state.conns[0].timer = ((UIP_TIME_WAIT_TIMEOUT - 1) as! byte).value;
+    const result: UipProcessResult = uip_process_timer(&state, &rt, 0);
+    try assert_eq_bool(result.closed, true);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_CLOSED);
+}
+
 test "tcp_build_ack and derivatives populate tuple and flags" {
     var rt: UipRuntime = make_runtime();
     var state: UipState = make_state();
@@ -461,9 +679,37 @@ test "tcp_build_ack and derivatives populate tuple and flags" {
     try assert_eq_i32(out.flags as i32, TCP_FIN | TCP_ACK);
 }
 
-test "tcp_ack_only_step reports ackdata for time_wait" {
+test "uip_process_tcp_core routes ack-only established packets" {
     var state: UipState = make_state();
-    state.conns[0].tcpstateflags = (UIP_TIME_WAIT as! byte).value;
-    const result: UipProcessResult = tcp_ack_only_step(&state, 0, true, 0u16, false, false);
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    const result: UipProcessResult = uip_process_tcp_core(&state, &rt, 0, 0u16, true, false, 0u16);
     try assert_eq_i32(result.flags as i32, UIP_ACKDATA);
+    try assert_eq_bool(result.closed, false);
+}
+
+test "uip_process_tcp_core routes rst input through close handling" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    rt.frame.ethtcp.flags = (TCP_RST as! byte).value;
+    const result: UipProcessResult = uip_process_tcp_core(&state, &rt, 0, 0u16, false, false, 0u16);
+    try assert_eq_bool(result.closed, true);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_CLOSED);
+}
+
+test "uip_process_tcp_core routes stopped connection fin" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_STOPPED as! byte).value;
+    const result: UipProcessResult = uip_process_tcp_core(&state, &rt, 0, 0u16, false, true, 0u16);
+    try assert_eq_i32(result.flags as i32, UIP_CLOSE);
+}
+
+test "uip_process_tcp_core routes last_ack through close step" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_LAST_ACK as! byte).value;
+    const result: UipProcessResult = uip_process_tcp_core(&state, &rt, 0, 0u16, true, false, 0u16);
+    try assert_eq_bool(result.closed, true);
 }

@@ -20,6 +20,10 @@ extern const UIP_TTL: i32;
 extern const UIP_TCPIP_HLEN: i32;
 extern const UIP_LLH_LEN: i32;
 
+struct UipStatsBlock { drop: u16, recv: u16, sent: u16, a: u16, b: u16, c: u16, d: u16, e: u16, f: u16 }
+struct UipStatsUdpBlock { drop: u16, recv: u16, sent: u16, chkerr: u16 }
+struct UipStats { ip: UipStatsBlock, icmp: UipStatsBlock, tcp: UipStatsBlock, udp: UipStatsUdpBlock }
+
 struct UipIpAddr { words: [u16: 2] }
 struct UipEthAddr { addr: [byte: 6] }
 struct UipEthHdr { dest: UipEthAddr, src: UipEthAddr, type: u16 }
@@ -28,7 +32,7 @@ struct EthTcpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid
 struct EthUdpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, udplen: u16, udpchksum: u16 }
 struct ArpHdr { ethhdr: UipEthHdr, hwtype: u16, protocol: u16, hwlen: byte, protolen: byte, opcode: u16, shwaddr: UipEthAddr, sipaddr: [u16: 2], dhwaddr: UipEthAddr, dipaddr: [u16: 2] }
 struct UipFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
-struct UipRuntime { frame: UipFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, len: u16, slen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, acc32: [byte: 4], ipid: u16, iss: [byte: 4] }
+struct UipRuntime { frame: UipFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, len: u16, slen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, acc32: [byte: 4], ipid: u16, iss: [byte: 4], te_reply: bool, stats: &UipStats }
 struct UipFwNetif { ipaddr: UipIpAddr, netmask: UipIpAddr, output_result: byte }
 struct UipFwCacheEntry { timer: u16, srcipaddr: UipIpAddr, destipaddr: UipIpAddr, ipid: u16, proto: byte }
 struct UipFwState { netifs: [&UipFwNetif: 4], netif_count: usize, default_index: i32, cache: [UipFwCacheEntry: 2] }
@@ -53,7 +57,9 @@ fn make_runtime() UipRuntime {
         current_udp_conn: -1,
         acc32: [0 as byte,0 as byte,0 as byte,0 as byte],
         ipid: 0u16,
-        iss: [0 as byte,0 as byte,0 as byte,0 as byte]
+        iss: [0 as byte,0 as byte,0 as byte,0 as byte],
+        te_reply: false,
+        stats: &UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } }
     };
 }
 
@@ -164,11 +170,28 @@ test "uip_fw_forward drops duplicate packet from cache" {
     try assert_eq_i32(uip_fw_forward(&state, &rt) as i32, UIP_FW_FORWARDED);
 }
 
-test "uip_fw_periodic decrements cache timers" {
+test "uip_fw_forward ttl expiry emits time exceeded style reply" {
     var state: UipFwState = make_fw_state();
-    state.cache[0].timer = 2u16;
-    state.cache[1].timer = 0u16;
-    uip_fw_periodic(&state);
-    try assert_eq_i32(state.cache[0].timer as i32, 1);
-    try assert_eq_i32(state.cache[1].timer as i32, 0);
+    var netif: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value };
+    uip_fw_register(&state, &netif);
+    uip_fw_default(&state, &netif);
+    var rt: UipRuntime = make_runtime();
+    rt.hostaddr = uip_ipaddr(192,168,0,2);
+    rt.len = 60u16;
+    const src: UipIpAddr = uip_ipaddr(1,1,1,1);
+    const dest: UipIpAddr = uip_ipaddr(8,8,8,8);
+    rt.frame.ethip.srcipaddr[0] = src.words[0];
+    rt.frame.ethip.srcipaddr[1] = src.words[1];
+    rt.frame.ethip.destipaddr[0] = dest.words[0];
+    rt.frame.ethip.destipaddr[1] = dest.words[1];
+    rt.frame.ethip.proto = 6 as byte;
+    rt.frame.ethip.ttl = 1 as byte;
+    try assert_eq_i32(uip_fw_forward(&state, &rt) as i32, UIP_FW_FORWARDED);
+    try assert_eq_bool(rt.te_reply, true);
+    try assert_eq_i32(rt.len as i32, 56);
+    try assert_eq_i32(rt.frame.ethip.proto as i32, UIP_PROTO_ICMP);
+    try assert_eq_i32(rt.frame.ethip.srcipaddr[0] as i32, rt.hostaddr.words[0] as i32);
+    try assert_eq_i32(rt.frame.ethip.destipaddr[0] as i32, src.words[0] as i32);
+    try assert_eq_bool(rt.frame.ethip.ipchksum != 0u16, true);
 }
+

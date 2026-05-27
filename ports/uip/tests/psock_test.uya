@@ -3,6 +3,7 @@ use std.testing;
 extern fn psock_init(psock: &Psock, buffer: &byte, buffersize: usize) void;
 extern fn psock_datalen(psock: &Psock) u16;
 extern fn psock_newdata(psock: &Psock) bool;
+extern fn psock_generator_refresh(psock: &Psock, generated_len: u16) void;
 extern fn psock_generator_send(psock: &Psock, generated_len: u16, mss: u16, rexmit: bool, acked: bool) byte;
 extern fn psock_close(psock: &Psock) void;
 extern fn psock_exit(psock: &Psock) byte;
@@ -23,7 +24,8 @@ struct Pt {
     yielded: bool,
     waiting: bool,
     exit_requested: bool,
-    restart_requested: bool
+    restart_requested: bool,
+    spawned: bool
 }
 
 struct PsockBuf {
@@ -45,6 +47,18 @@ struct Psock {
     lastlen: u16
 }
 
+test "psock_generator_refresh resets pointer to regenerated buffer" {
+    var storage: [byte: 8] = [0: 8];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    _ = psock_generator_send(&ps, 6u16, 4u16, false, false);
+    _ = psock_generator_send(&ps, 6u16, 4u16, false, true);
+    try assert_eq_i32(ps.sendlen as i32, 2);
+    psock_generator_refresh(&ps, 6u16);
+    try assert_eq_i32(ps.sendlen as i32, 6);
+    try assert_eq_i32(@usize_from_ptr(ps.sendptr as &void) as i32, @usize_from_ptr(ps.bufptr as &void) as i32);
+}
+
 test "psock_init wires buffer and clears lengths" {
     var storage: [byte: 8] = [0: 8];
     var ps: Psock = Psock { pt: Pt { lc: 1u16, yielded: true, waiting: false, exit_requested: false, restart_requested: false }, psockpt: Pt { lc: 2u16, yielded: true, waiting: false, exit_requested: false, restart_requested: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 9u16, readlen: 8u16, buf: PsockBuf { ptr: null, left: 7u16 }, bufsize: 0, state: 3 as byte, lastlen: 5u16 };
@@ -53,6 +67,19 @@ test "psock_init wires buffer and clears lengths" {
     try assert_eq_i32(ps.readlen as i32, 0);
     try assert_eq_i32(ps.buf.left as i32, 8);
     try assert_eq_i32(ps.bufsize as i32, 8);
+}
+
+test "psock_send acked state continues with remaining payload instead of restarting" {
+    var storage: [byte: 8] = [0: 8];
+    var payload: [byte: 5] = [1, 2, 3, 4, 5];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    _ = psock_send(&ps, &payload[0], 5u16, 2u16, false, false);
+    _ = psock_send(&ps, &payload[0], 5u16, 2u16, false, true);
+    try assert_eq_i32(ps.sendlen as i32, 3);
+    try assert_eq_i32(psock_send(&ps, &payload[0], 5u16, 2u16, false, false) as i32, PT_WAITING);
+    try assert_eq_i32(ps.sendlen as i32, 3);
+    try assert_eq_i32(ps.lastlen as i32, 2);
 }
 
 test "psock_send waits for ack and only ends after final chunk" {
@@ -114,6 +141,18 @@ test "psock_send retransmit keeps pending send active" {
     try assert_eq_i32(psock_send(&ps, &payload[0], 5u16, 3u16, true, false) as i32, PT_WAITING);
     try assert_eq_i32(ps.sendlen as i32, 5);
     try assert_eq_i32(ps.lastlen as i32, 3);
+}
+
+test "psock_generator_send rexmit regenerates full pending payload" {
+    var storage: [byte: 8] = [0: 8];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    _ = psock_generator_send(&ps, 6u16, 4u16, false, false);
+    _ = psock_generator_send(&ps, 6u16, 4u16, false, true);
+    try assert_eq_i32(ps.sendlen as i32, 2);
+    try assert_eq_i32(psock_generator_send(&ps, 6u16, 4u16, true, false) as i32, PT_WAITING);
+    try assert_eq_i32(ps.sendlen as i32, 6);
+    try assert_eq_i32(ps.lastlen as i32, 4);
 }
 
 test "psock_close marks blocked close state" {

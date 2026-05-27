@@ -139,7 +139,8 @@ struct UipRuntime {
     ipid: u16,
     iss: [byte: 4],
     logcode: byte,
-    logparam: u16
+    logparam: u16,
+    stats: &UipStats
 }
 
 struct UipProcessResult {
@@ -319,7 +320,8 @@ fn hs_make_runtime(flags: byte, len: u16, slen: u16, tcp_flags: byte, seq0: byte
         ipid: 0u16,
         iss: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
         logcode: 0 as byte,
-        logparam: 0u16
+        logparam: 0u16,
+        stats: &UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } }
     };
     return rt;
 }
@@ -357,6 +359,64 @@ fn hs_make_state(tcpstateflags: byte, len: u16, rcv3: byte) UipState {
         lastport: 0u16
     };
     return state;
+}
+
+test "tcp_should_accept_syn matches listen port only for syn" {
+    var rt: UipRuntime = hs_make_runtime(0 as byte, 0u16, 0u16, (TCP_SYN as! byte).value, 0 as byte, 0 as byte, 0 as byte, 9 as byte, 1 as byte, 44 as byte);
+    var state: UipState = hs_make_state((UIP_CLOSED as! byte).value, 0u16, 0 as byte);
+    state.listenports[0] = rt.frame.ethtcp.destport;
+    try assert_eq_bool(tcp_should_accept_syn(&state, &rt.frame), true);
+    rt.frame.ethtcp.flags = (TCP_ACK as! byte).value;
+    try assert_eq_bool(tcp_should_accept_syn(&state, &rt.frame), false);
+}
+
+test "uip_accept_syn allocates closed slot and parses mss" {
+    var rt: UipRuntime = hs_make_runtime(0 as byte, 0u16, 0u16, (TCP_SYN as! byte).value, 1 as byte, 2 as byte, 3 as byte, 4 as byte, 1 as byte, 200 as byte);
+    rt.iss[0] = 9 as byte;
+    rt.iss[1] = 8 as byte;
+    rt.iss[2] = 7 as byte;
+    rt.iss[3] = 6 as byte;
+    rt.frame.ethtcp.srcport = htons(1234u16);
+    rt.frame.ethtcp.destport = htons(80u16);
+    rt.frame.ethtcp.srcipaddr[0] = uip_ipaddr(10,0,0,2).words[0];
+    rt.frame.ethtcp.srcipaddr[1] = uip_ipaddr(10,0,0,2).words[1];
+    var state: UipState = hs_make_state((UIP_CLOSED as! byte).value, 0u16, 0 as byte);
+    state.listenports[0] = htons(80u16);
+    var index: i32 = -1;
+    const ok: bool = uip_accept_syn(&state, &rt, &rt.frame, &index);
+    try assert_eq_bool(ok, true);
+    try assert_eq_i32(index, 0);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_SYN_RCVD);
+    try assert_eq_i32(state.conns[0].mss as i32, 346);
+    try assert_eq_i32(state.conns[0].snd_nxt[0] as i32, 9);
+    try assert_eq_i32(state.conns[0].snd_nxt[3] as i32, 6);
+    try assert_eq_i32(state.conns[0].rcv_nxt[3] as i32, 5);
+}
+
+test "uip_accept_syn reuses oldest time_wait slot" {
+    var rt: UipRuntime = hs_make_runtime(0 as byte, 0u16, 0u16, (TCP_SYN as! byte).value, 0 as byte, 0 as byte, 0 as byte, 1 as byte, 0 as byte, 100 as byte);
+    rt.iss[0] = 1 as byte;
+    rt.iss[1] = 1 as byte;
+    rt.iss[2] = 1 as byte;
+    rt.iss[3] = 1 as byte;
+    rt.frame.ethtcp.srcport = htons(5555u16);
+    rt.frame.ethtcp.destport = htons(23u16);
+    var state: UipState = hs_make_state((UIP_ESTABLISHED as! byte).value, 0u16, 0 as byte);
+    state.listenports[0] = htons(23u16);
+    state.conns[0].tcpstateflags = (UIP_TIME_WAIT as! byte).value;
+    state.conns[0].timer = 2 as byte;
+    state.conns[1].tcpstateflags = (UIP_TIME_WAIT as! byte).value;
+    state.conns[1].timer = 9 as byte;
+    var i: usize = 2usize;
+    while i < 10usize {
+        state.conns[i].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+        i = i + 1usize;
+    }
+    var index: i32 = -1;
+    const ok: bool = uip_accept_syn(&state, &rt, &rt.frame, &index);
+    try assert_eq_bool(ok, true);
+    try assert_eq_i32(index, 1);
+    try assert_eq_i32(state.conns[1].tcpstateflags as i32, UIP_SYN_RCVD);
 }
 
 test "tcp_syn_sent_step establishes connection on synack" {
@@ -463,6 +523,43 @@ test "uip_process_core routes fin_wait_2 fin to ack output" {
     try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_TIME_WAIT);
     try assert_eq_i32(rt.frame.ethtcp.flags as i32, TCP_ACK);
     try assert_eq_i32(rt.frame.ethtcp.ackno[3] as i32, 4);
+}
+
+test "tcp_ack_outstanding skips rtt update after retransmission" {
+    var rt: UipRuntime = hs_make_runtime(0 as byte, 0u16, 0u16, (TCP_ACK as! byte).value, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte);
+    rt.frame.ethtcp.ackno[0] = 0 as byte;
+    rt.frame.ethtcp.ackno[1] = 0 as byte;
+    rt.frame.ethtcp.ackno[2] = 0 as byte;
+    rt.frame.ethtcp.ackno[3] = 5 as byte;
+    var state: UipState = hs_make_state((UIP_ESTABLISHED as! byte).value, 3u16, 0 as byte);
+    state.conns[0].snd_nxt[3] = 2 as byte;
+    state.conns[0].sa = 8 as byte;
+    state.conns[0].sv = 4 as byte;
+    state.conns[0].rto = 6 as byte;
+    state.conns[0].timer = 2 as byte;
+    state.conns[0].nrtx = 1 as byte;
+    const result: UipProcessResult = tcp_ack_outstanding(&state, &rt, 0, &rt.frame);
+    try assert_eq_i32(result.flags as i32, UIP_ACKDATA);
+    try assert_eq_i32(state.conns[0].sa as i32, 8);
+    try assert_eq_i32(state.conns[0].sv as i32, 4);
+}
+
+test "tcp_ack_outstanding ignores unexpected ack number" {
+    var rt: UipRuntime = hs_make_runtime(0 as byte, 0u16, 0u16, (TCP_ACK as! byte).value, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte);
+    rt.frame.ethtcp.ackno[0] = 0 as byte;
+    rt.frame.ethtcp.ackno[1] = 0 as byte;
+    rt.frame.ethtcp.ackno[2] = 0 as byte;
+    rt.frame.ethtcp.ackno[3] = 9 as byte;
+    var state: UipState = hs_make_state((UIP_ESTABLISHED as! byte).value, 2u16, 0 as byte);
+    state.conns[0].snd_nxt[3] = 1 as byte;
+    state.conns[0].sa = 8 as byte;
+    state.conns[0].sv = 4 as byte;
+    state.conns[0].rto = 6 as byte;
+    state.conns[0].timer = 2 as byte;
+    const result: UipProcessResult = tcp_ack_outstanding(&state, &rt, 0, &rt.frame);
+    try assert_eq_i32(result.flags as i32, 0);
+    try assert_eq_i32(state.conns[0].snd_nxt[3] as i32, 1);
+    try assert_eq_i32(state.conns[0].len as i32, 2);
 }
 
 test "uip_tcp_handshake_ack_outstanding advances snd_nxt and clears len" {

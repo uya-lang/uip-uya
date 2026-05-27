@@ -14,9 +14,9 @@ extern const UIP_POLL: i32;
 extern const UIP_PROTO_TCP: i32;
 extern const TCP_ACK: i32;
 
-struct UipIpAddr {
-    words: [u16: 2]
-}
+struct UipStatsBlock { drop: u16, recv: u16, sent: u16, a: u16, b: u16, c: u16, d: u16, e: u16, f: u16 }
+struct UipStatsUdpBlock { drop: u16, recv: u16, sent: u16, chkerr: u16 }
+struct UipStats { ip: UipStatsBlock, icmp: UipStatsBlock, tcp: UipStatsBlock, udp: UipStatsUdpBlock }
 
 test "uip_process_core routes udp timer flag to timer handler" {
     var rt: UipRuntime = make_runtime();
@@ -38,6 +38,7 @@ test "uip_process_core routes udp timer flag to timer handler" {
 }
 
 fn make_runtime() UipRuntime {
+    var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
     var rt: UipRuntime = UipRuntime {
         frame: UipFrame {
             ethip: EthIpHdr {
@@ -139,7 +140,8 @@ fn make_runtime() UipRuntime {
         ipid: 0u16,
         iss: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
         logcode: 0 as byte,
-        logparam: 0u16
+        logparam: 0u16,
+        stats: &stats
     };
     return rt;
 }
@@ -180,6 +182,7 @@ fn make_state() UipState {
 }
 
 test "udp_input_step clears selection on unmatched frame" {
+    var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
     var rt: UipRuntime = UipRuntime {
         frame: UipFrame {
             ethip: EthIpHdr {
@@ -332,6 +335,7 @@ test "udp_input_step clears selection on unmatched frame" {
 }
 
 test "udp_send_step fills header for connection 1 basic" {
+    var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
     var rt: UipRuntime = UipRuntime {
         frame: UipFrame {
             ethip: EthIpHdr {
@@ -614,7 +618,8 @@ struct UipRuntime {
     ipid: u16,
     iss: [byte: 4],
     logcode: byte,
-    logparam: u16
+    logparam: u16,
+    stats: &UipStats
 }
 
 struct UipProcessResult {
@@ -722,6 +727,7 @@ test "udp_find_conn returns matching index" {
 }
 
 test "udp_input_step selects matching connection and marks newdata" {
+    var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
     var rt: UipRuntime = UipRuntime {
         frame: UipFrame {
             ethip: EthIpHdr {
@@ -874,6 +880,7 @@ test "udp_input_step selects matching connection and marks newdata" {
 }
 
 test "udp_send_step fills udp header and total length detailed" {
+    var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
     var rt: UipRuntime = UipRuntime {
         frame: UipFrame {
             ethip: EthIpHdr {

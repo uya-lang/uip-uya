@@ -14,7 +14,8 @@ export struct Pt {
     yielded: bool,
     waiting: bool,
     exit_requested: bool,
-    restart_requested: bool
+    restart_requested: bool,
+    spawned: bool
 }
 
 export const PSOCK_STATE_NONE: i32 = 0;
@@ -71,6 +72,7 @@ export fn pt_init(pt: &Pt) void {
     pt.waiting = false;
     pt.exit_requested = false;
     pt.restart_requested = false;
+    pt.spawned = false;
 }
 
 export fn pt_wait_until(pt: &Pt, condition: bool) byte {
@@ -79,6 +81,7 @@ export fn pt_wait_until(pt: &Pt, condition: bool) byte {
     if !condition {
         return PT_WAITING as byte;
     }
+    pt.waiting = false;
     return PT_YIELDED as byte;
 }
 
@@ -91,8 +94,15 @@ export fn pt_wait_thread(pt: &Pt, status: byte) byte {
 }
 
 export fn pt_spawn(pt: &Pt, child: &Pt, status: byte) byte {
-    pt_init(child);
-    return pt_wait_thread(pt, status);
+    if !pt.spawned {
+        pt_init(child);
+        pt.spawned = true;
+    }
+    const result: byte = pt_wait_thread(pt, status);
+    if result != (PT_WAITING as! byte).value {
+        pt.spawned = false;
+    }
+    return result;
 }
 
 export fn pt_restart(pt: &Pt) byte {
@@ -114,6 +124,7 @@ export fn pt_yield_until(pt: &Pt, condition: bool) byte {
         return PT_YIELDED as byte;
     }
     pt.yielded = false;
+    pt.waiting = false;
     return PT_WAITING as byte;
 }
 
@@ -208,6 +219,9 @@ export fn psock_send(psock: &Psock, buf: &byte, len: u16, mss: u16, rexmit: bool
             return PT_ENDED as byte;
         }
     }
+    if psock.state == (PSOCK_STATE_ACKED as! byte).value {
+        psock.state = (PSOCK_STATE_NONE as! byte).value;
+    }
     if psock.state != (PSOCK_STATE_DATA_SENT as! byte).value || rexmit {
         psock.state = (PSOCK_STATE_BLOCKED_SEND as! byte).value;
         psock.state = (PSOCK_STATE_DATA_SENT as! byte).value;
@@ -215,17 +229,28 @@ export fn psock_send(psock: &Psock, buf: &byte, len: u16, mss: u16, rexmit: bool
     return PT_WAITING as byte;
 }
 
+export fn psock_generator_refresh(psock: &Psock, generated_len: u16) void {
+    if generated_len == 0u16 {
+        psock.sendlen = 0u16;
+        return;
+    }
+    psock.sendptr = psock.bufptr;
+    psock.sendlen = generated_len;
+    if psock.state == (PSOCK_STATE_ACKED as! byte).value {
+        psock.state = (PSOCK_STATE_NONE as! byte).value;
+    }
+}
+
 export fn psock_generator_send(psock: &Psock, generated_len: u16, mss: u16, rexmit: bool, acked: bool) byte {
     if generated_len == 0u16 {
         return PT_EXITED as byte;
     }
     if psock.sendlen == 0u16 {
-        psock.sendlen = generated_len;
-        psock.sendptr = psock.bufptr;
-        psock.state = 0 as byte;
+        psock_generator_refresh(psock, generated_len);
+        psock.state = (PSOCK_STATE_NONE as! byte).value;
     }
     if rexmit {
-        psock.sendlen = generated_len;
+        psock_generator_refresh(psock, generated_len);
     }
     return psock_send(psock, psock.sendptr, psock.sendlen, mss, rexmit, acked);
 }

@@ -22,11 +22,12 @@ struct Pt {
     yielded: bool,
     waiting: bool,
     exit_requested: bool,
-    restart_requested: bool
+    restart_requested: bool,
+    spawned: bool
 }
 
 test "pt_init resets local continuation and yield flag" {
-    var pt: Pt = Pt { lc: 9u16, yielded: true, waiting: true, exit_requested: true, restart_requested: true };
+    var pt: Pt = Pt { lc: 9u16, yielded: true, waiting: true, exit_requested: true, restart_requested: true, spawned: true };
     pt_init(&pt);
     try assert_eq_i32(pt.lc as i32, 0);
     try assert_eq_bool(pt.yielded, false);

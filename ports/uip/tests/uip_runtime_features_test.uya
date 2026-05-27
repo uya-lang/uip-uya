@@ -29,7 +29,7 @@ struct EthTcpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid
 struct EthUdpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, udplen: u16, udpchksum: u16 }
 struct ArpHdr { ethhdr: UipEthHdr, hwtype: u16, protocol: u16, hwlen: byte, protolen: byte, opcode: u16, shwaddr: UipEthAddr, sipaddr: [u16: 2], dhwaddr: UipEthAddr, dipaddr: [u16: 2] }
 struct UipFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
-struct UipRuntime { frame: UipFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, urgdata: &byte, len: u16, slen: u16, urglen: u16, surglen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, acc32: [byte: 4], ipid: u16, iss: [byte: 4], logcode: byte, logparam: u16 }
+struct UipRuntime { frame: UipFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, urgdata: &byte, len: u16, slen: u16, urglen: u16, surglen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, acc32: [byte: 4], ipid: u16, iss: [byte: 4], logcode: byte, logparam: u16, stats: &UipStats }
 struct UipConn { ripaddr: UipIpAddr, lport: u16, rport: u16, rcv_nxt: [byte: 4], snd_nxt: [byte: 4], len: u16, mss: u16, initialmss: u16, sa: byte, sv: byte, rto: byte, tcpstateflags: byte, timer: byte, nrtx: byte, appstate: u16 }
 struct UipUdpConn { ripaddr: UipIpAddr, lport: u16, rport: u16, ttl: byte, appstate: u16 }
 struct UipState { listenports: [u16: 20], conns: [UipConn: 10], udp_conns: [UipUdpConn: 10], acc32: [byte: 4], flags: byte, len: u16, lastport: u16 }
@@ -60,7 +60,8 @@ fn make_runtime() UipRuntime {
         ipid: 0u16,
         iss: [0 as byte,0 as byte,0 as byte,0 as byte],
         logcode: 0 as byte,
-        logparam: 0u16
+        logparam: 0u16,
+        stats: &UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } }
     };
 }
 
@@ -109,6 +110,7 @@ test "uip_process_tcp_core records data logging and urgent flag" {
     try assert_eq_bool(result.urgdata, true);
     try assert_eq_bool(result.logged, true);
     try assert_eq_i32(rt.logcode as i32, UIP_LOG_DATA);
+    try assert_eq_i32(rt.stats.tcp.recv as i32, 1);
     try assert_eq_i32(state.conns[0].appstate as i32, 1);
 }
 
@@ -120,4 +122,5 @@ test "uip_process_tcp_core logs rst reply for unmatched connection" {
     const result: UipProcessResult = uip_process_tcp_core(&state, &rt, -1, 0u16, false, false, 0u16);
     try assert_eq_bool(result.logged, true);
     try assert_eq_i32(rt.logcode as i32, UIP_LOG_RST);
+    try assert_eq_i32(rt.stats.tcp.drop as i32, 1);
 }
