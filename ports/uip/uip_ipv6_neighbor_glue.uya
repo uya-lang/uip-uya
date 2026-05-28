@@ -1,0 +1,15 @@
+export struct UipEthAddr { addr: [byte: 6] }
+export struct UipNeighborAddr { addr: UipEthAddr }
+export struct UipNeighborEntry { ipaddr: UipIpAddr, addr: UipNeighborAddr, time: byte }
+export struct UipNeighborState { entries: [UipNeighborEntry: 8] }
+export struct UipIpv6Hdr { vtc: byte, tcflow: byte, flow: [byte: 2], len: [byte: 2], proto: byte, ttl: byte, srcipaddr: [u16: 8], destipaddr: [u16: 8] }
+export struct UipIcmp6Hdr { type: byte, code: byte, icmpchksum: u16, data: [byte: 4] }
+export struct UipIcmp6NeighborHdr { type: byte, code: byte, icmpchksum: u16, flags: [byte: 4], targetipaddr: [u16: 8] }
+
+extern fn uip_ipv6_neighbor_ns_bridge(state: &UipNeighborState, ip: &UipIpv6Hdr, hdr: &UipIcmp6NeighborHdr, lladdr: &UipNeighborAddr) byte;
+extern fn ipv6_input_neighbor_bridge(ip: &UipIpv6Hdr, hdr: &UipIcmp6NeighborHdr, bridge_result: byte) byte;
+
+export fn uip_ipv6_neighbor_glue_step(state: &UipNeighborState, ip: &UipIpv6Hdr, hdr: &UipIcmp6NeighborHdr, lladdr: &UipNeighborAddr) byte {
+    const bridge_result: byte = uip_ipv6_neighbor_ns_bridge(state, ip, hdr, lladdr);
+    return ipv6_input_neighbor_bridge(ip, hdr, bridge_result);
+}

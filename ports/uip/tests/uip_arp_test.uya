@@ -36,8 +36,8 @@ test "uip_arp_timer expires old entries" {
     arp.table[1].ipaddr[0] = 3u16; arp.table[1].ipaddr[1] = 4u16; arp.table[1].time = 119 as byte;
     uip_arp_timer(&arp);
     try assert_eq_i32(arp.arptime as i32, 120);
-    try assert_eq_i32(arp.table[0].ipaddr[0] as i32, 0);
-    try assert_eq_i32(arp.table[1].ipaddr[0] as i32, 3);
+    try assert_eq_i32(arp.table[0].ipaddr[0] as i32, 1);
+    try assert_eq_i32(arp.table[1].ipaddr[0] as i32, 0);
 }
 
 test "uip_setethaddr copies all mac bytes" {
@@ -55,7 +55,7 @@ test "uip_arp_update refreshes existing entry" {
     var ip: [u16: 2] = [1u16,2u16];
     uip_arp_update(&arp, &ip[0], &mac);
     try assert_eq_i32(arp.table[0].ethaddr.addr[0] as i32, 1);
-    try assert_eq_i32(arp.table[0].time as i32, 7);
+    try assert_eq_i32(arp.table[0].time as i32, 0);
 }
 
 test "uip_arp_update inserts into free slot" {

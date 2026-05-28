@@ -16,7 +16,7 @@ struct ArpEntry { ipaddr: [u16: 2], ethaddr: UipEthAddr, time: byte }
 struct UipArpState { ethaddr: UipEthAddr, hostaddr: UipIpAddr, netmask: UipIpAddr, draddr: UipIpAddr, table: [ArpEntry: 8], arptime: byte }
 struct UipEthHdr { dest: UipEthAddr, src: UipEthAddr, type: u16 }
 struct EthIpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2] }
-struct UipReassState { buf: [byte: 386], bitmap: [byte: 6], len: u16, flags: byte, timer: byte }
+struct UipReassState { buf: [byte: 386], bitmap: [byte: 6], len: u16, flags: byte, timer: byte, srcipaddr: [u16: 2], destipaddr: [u16: 2], ipid: [byte: 2], proto: byte }
 
 fn make_hdr(ipoffset0: byte, ipoffset1: byte, total_len: u16) EthIpHdr {
     return EthIpHdr {
@@ -35,7 +35,7 @@ fn make_hdr(ipoffset0: byte, ipoffset1: byte, total_len: u16) EthIpHdr {
 }
 
 test "uip_reass_step last fragment first stays pending" {
-    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte };
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte, srcipaddr: [0u16, 0u16], destipaddr: [0u16, 0u16], ipid: [0 as byte, 0 as byte], proto: 0 as byte };
     var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
     var last: EthIpHdr = make_hdr(0 as byte, 1 as byte, 24u16);
     var p1: [byte: 4] = [9,10,11,12];
@@ -45,7 +45,7 @@ test "uip_reass_step last fragment first stays pending" {
 }
 
 test "uip_reass_step completes when first fragment arrives after last" {
-    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte };
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte, srcipaddr: [0u16, 0u16], destipaddr: [0u16, 0u16], ipid: [0 as byte, 0 as byte], proto: 0 as byte };
     var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
     var last: EthIpHdr = make_hdr(0 as byte, 1 as byte, 24u16);
     var first: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
@@ -57,8 +57,22 @@ test "uip_reass_step completes when first fragment arrives after last" {
     try assert_eq_i32(out.ipoffset[1] as i32, 0);
 }
 
+test "uip_reass_debug last then first exposes bitmap state" {
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte, srcipaddr: [0u16, 0u16], destipaddr: [0u16, 0u16], ipid: [0 as byte, 0 as byte], proto: 0 as byte };
+    var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
+    var last: EthIpHdr = make_hdr(0 as byte, 1 as byte, 24u16);
+    var first: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
+    var p1: [byte: 4] = [9,10,11,12];
+    var p0: [byte: 8] = [1,2,3,4,5,6,7,8];
+    _ = uip_reass_step(&state, &last, &p1[0], 4u16, &out);
+    _ = uip_reass_step(&state, &first, &p0[0], 8u16, &out);
+    try assert_eq_i32(state.len as i32, 12);
+    try assert_eq_i32(state.flags as i32, UIP_REASS_FLAG_LASTFRAG);
+    try assert_eq_i32(state.bitmap[0] as i32, 3);
+}
+
 test "uip_reass_step switches to new datagram identity" {
-    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte };
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte, srcipaddr: [0u16, 0u16], destipaddr: [0u16, 0u16], ipid: [0 as byte, 0 as byte], proto: 0 as byte };
     var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
     var frag0: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
     var frag_new: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
@@ -74,7 +88,7 @@ test "uip_reass_step switches to new datagram identity" {
 }
 
 test "uip_reass_init clears timer and length" {
-    var state: UipReassState = UipReassState { buf: [1 as byte: 386], bitmap: [1 as byte: 6], len: 9u16, flags: 3 as byte, timer: 4 as byte };
+    var state: UipReassState = UipReassState { buf: [1 as byte: 386], bitmap: [1 as byte: 6], len: 9u16, flags: 3 as byte, timer: 4 as byte, srcipaddr: [0u16, 0u16], destipaddr: [0u16, 0u16], ipid: [0 as byte, 0 as byte], proto: 0 as byte };
     uip_reass_init(&state);
     try assert_eq_i32(state.len as i32, 0);
     try assert_eq_i32(state.timer as i32, 0);
@@ -86,7 +100,7 @@ test "uip_reass_overflow detects too large fragment window" {
 }
 
 test "uip_reass_step first fragment arms timer" {
-    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte };
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte, srcipaddr: [0u16, 0u16], destipaddr: [0u16, 0u16], ipid: [0 as byte, 0 as byte], proto: 0 as byte };
     var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
     var frag0: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
     var p0: [byte: 8] = [1,2,3,4,5,6,7,8];
@@ -95,7 +109,7 @@ test "uip_reass_step first fragment arms timer" {
 }
 
 test "uip_reass_step completes after last fragment" {
-    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte };
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte, srcipaddr: [0u16, 0u16], destipaddr: [0u16, 0u16], ipid: [0 as byte, 0 as byte], proto: 0 as byte };
     var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
     var frag0: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
     var frag1: EthIpHdr = make_hdr(0 as byte, 1 as byte, 24u16);
@@ -103,19 +117,72 @@ test "uip_reass_step completes after last fragment" {
     var p1: [byte: 4] = [9,10,11,12];
     try assert_eq_i32(uip_reass_step(&state, &frag0, &p0[0], 8u16, &out) as i32, 0);
     try assert_eq_i32(state.timer as i32, UIP_REASS_MAXAGE);
-    try assert_eq_i32(uip_reass_step(&state, &frag1, &p1[0], 4u16, &out) as i32, 0);
+    try assert_eq_i32(uip_reass_step(&state, &frag1, &p1[0], 4u16, &out) as i32, 12);
 }
 
-test "uip_reass_step waits for missing middle fragment" {
-    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte };
+
+test "uip_reass_step duplicate fragment keeps completion state stable" {
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte, srcipaddr: [0u16, 0u16], destipaddr: [0u16, 0u16], ipid: [0 as byte, 0 as byte], proto: 0 as byte };
     var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
     var frag0: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
-    var frag2: EthIpHdr = make_hdr(0 as byte, 2 as byte, 24u16);
+    var frag1: EthIpHdr = make_hdr(0 as byte, 1 as byte, 24u16);
     var p0: [byte: 8] = [1,2,3,4,5,6,7,8];
-    var p2: [byte: 4] = [13,14,15,16];
-    try assert_eq_i32(uip_reass_step(&state, &frag0, &p0[0], 8u16, &out) as i32, 0);
-    try assert_eq_i32(uip_reass_step(&state, &frag2, &p2[0], 4u16, &out) as i32, 0);
-    try assert_eq_i32(state.len as i32, 20);
+    var p1: [byte: 4] = [9,10,11,12];
+    _ = uip_reass_step(&state, &frag0, &p0[0], 8u16, &out);
+    try assert_eq_i32(uip_reass_step(&state, &frag1, &p1[0], 4u16, &out) as i32, 12);
+    try assert_eq_i32(state.timer as i32, 0);
+    try assert_eq_i32(uip_reass_step(&state, &frag1, &p1[0], 4u16, &out) as i32, 0);
     try assert_eq_i32(state.timer as i32, UIP_REASS_MAXAGE);
+}
+
+
+test "uip_reass_tick expiry clears partial datagram on next fragment" {
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte, srcipaddr: [0u16, 0u16], destipaddr: [0u16, 0u16], ipid: [0 as byte, 0 as byte], proto: 0 as byte };
+    var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
+    var frag0: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
+    var frag1: EthIpHdr = make_hdr(0 as byte, 1 as byte, 24u16);
+    var p0: [byte: 8] = [1,2,3,4,5,6,7,8];
+    var p1: [byte: 4] = [9,10,11,12];
+    _ = uip_reass_step(&state, &frag0, &p0[0], 8u16, &out);
+    while state.timer > 0 as byte {
+        uip_reass_tick(&state);
+    }
+    try assert_eq_i32(state.timer as i32, 0);
+    try assert_eq_i32(uip_reass_step(&state, &frag1, &p1[0], 4u16, &out) as i32, 0);
+    try assert_eq_i32(state.len as i32, 12);
+    try assert_eq_i32(state.bitmap[0] as i32, 2);
+}
+
+
+test "uip_reass_step reassembles four fragments across bitmap bytes" {
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte, srcipaddr: [0u16, 0u16], destipaddr: [0u16, 0u16], ipid: [0 as byte, 0 as byte], proto: 0 as byte };
+    var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
+    var frag0: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 84u16);
+    var frag1: EthIpHdr = make_hdr((IP_MF as! byte).value, 8 as byte, 84u16);
+    var frag2: EthIpHdr = make_hdr((IP_MF as! byte).value, 16 as byte, 84u16);
+    var frag3: EthIpHdr = make_hdr(0 as byte, 24 as byte, 28u16);
+    var p0: [byte: 64] = [1 as byte: 64];
+    var p1: [byte: 64] = [2 as byte: 64];
+    var p2: [byte: 64] = [3 as byte: 64];
+    var p3: [byte: 8] = [4 as byte: 8];
+    try assert_eq_i32(uip_reass_step(&state, &frag2, &p2[0], 64u16, &out) as i32, 0);
+    try assert_eq_i32(uip_reass_step(&state, &frag0, &p0[0], 64u16, &out) as i32, 0);
+    try assert_eq_i32(uip_reass_step(&state, &frag3, &p3[0], 8u16, &out) as i32, 0);
+    try assert_eq_i32(uip_reass_step(&state, &frag1, &p1[0], 64u16, &out) as i32, 200);
+    try assert_eq_i32(out.len[0] as i32, 0);
+    try assert_eq_i32(out.len[1] as i32, 200);
+}
+
+test "uip_reass_step accepts near buffer limit datagram" {
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte, srcipaddr: [0u16, 0u16], destipaddr: [0u16, 0u16], ipid: [0 as byte, 0 as byte], proto: 0 as byte };
+    var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
+    var frag0: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 340u16);
+    var frag1: EthIpHdr = make_hdr(0 as byte, 40 as byte, 66u16);
+    var p0: [byte: 320] = [7 as byte: 320];
+    var p1: [byte: 46] = [9 as byte: 46];
+    try assert_eq_i32(uip_reass_step(&state, &frag0, &p0[0], 320u16, &out) as i32, 0);
+    try assert_eq_i32(uip_reass_step(&state, &frag1, &p1[0], 46u16, &out) as i32, 366);
+    try assert_eq_i32(out.len[0] as i32, 1);
+    try assert_eq_i32(out.len[1] as i32, 110);
 }
 

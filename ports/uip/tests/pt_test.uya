@@ -80,15 +80,35 @@ test "pt_wait_thread and pt_spawn follow child scheduling state" {
     try assert_eq_i32(child.lc as i32, 0);
 }
 
-test "pt_restart resets pt and returns waiting" {
-    var pt: Pt = Pt { lc: 5u16, yielded: true, waiting: true, exit_requested: true, restart_requested: false };
-    try assert_eq_i32(pt_restart(&pt) as i32, PT_WAITING);
-    try assert_eq_i32(pt.lc as i32, 0);
-    try assert_eq_bool(pt.restart_requested, true);
+
+test "pt_spawn reinitializes child only on first entry and clears spawned after completion" {
+    var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    var child: Pt = Pt { lc: 9u16, yielded: true, waiting: true, exit_requested: true, restart_requested: true, spawned: true };
+    try assert_eq_i32(pt_spawn(&pt, &child, (PT_WAITING as! byte).value) as i32, PT_WAITING);
+    try assert_eq_i32(child.lc as i32, 0);
+    child.lc = 12u16;
+    try assert_eq_i32(pt_spawn(&pt, &child, (PT_WAITING as! byte).value) as i32, PT_WAITING);
+    try assert_eq_i32(child.lc as i32, 12);
+    try assert_eq_i32(pt_spawn(&pt, &child, (PT_EXITED as! byte).value) as i32, PT_YIELDED);
+    try assert_eq_bool(pt.spawned, false);
 }
 
-test "pt_schedule is true only for waiting status" {
-    try assert_eq_bool(pt_schedule((PT_WAITING as! byte).value), true);
-    try assert_eq_bool(pt_schedule((PT_EXITED as! byte).value), false);
-    try assert_eq_bool(pt_schedule((PT_ENDED as! byte).value), false);
+test "pt_wait_thread treats both ended and exited child as complete" {
+    var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    try assert_eq_i32(pt_wait_thread(&pt, (PT_ENDED as! byte).value) as i32, PT_YIELDED);
+    try assert_eq_i32(pt_wait_thread(&pt, (PT_EXITED as! byte).value) as i32, PT_YIELDED);
+}
+
+
+test "pt_restart and pt_exit clear waiting yielded and spawned flags" {
+    var pt1: Pt = Pt { lc: 7u16, yielded: true, waiting: true, exit_requested: false, restart_requested: false, spawned: true };
+    try assert_eq_i32(pt_restart(&pt1) as i32, PT_WAITING);
+    try assert_eq_bool(pt1.yielded, false);
+    try assert_eq_bool(pt1.waiting, false);
+    try assert_eq_bool(pt1.spawned, false);
+    var pt2: Pt = Pt { lc: 8u16, yielded: true, waiting: true, exit_requested: false, restart_requested: false, spawned: true };
+    try assert_eq_i32(pt_exit(&pt2) as i32, PT_EXITED);
+    try assert_eq_bool(pt2.yielded, false);
+    try assert_eq_bool(pt2.waiting, false);
+    try assert_eq_bool(pt2.spawned, false);
 }

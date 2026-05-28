@@ -257,76 +257,104 @@ export fn psock_generator_send(psock: &Psock, generated_len: u16, mss: u16, rexm
 
 export fn psock_readbuf(psock: &Psock, input: &byte, input_len: u16) byte {
     psock_buf_setup(&psock.buf, psock.bufptr, psock.bufsize);
-    if input_len == 0u16 && psock.readlen == 0u16 {
-        psock.state = 3 as byte;
-        return PT_WAITING as byte;
-    }
-    psock.state = 2 as byte;
     if psock.readlen == 0u16 {
+        if input_len == 0u16 {
+            psock.state = (PSOCK_STATE_BLOCKED_NEWDATA as! byte).value;
+            return PT_WAITING as byte;
+        }
+        psock.state = (PSOCK_STATE_READ as! byte).value;
         psock.readptr = input;
         psock.readlen = input_len;
     }
-    var copied: u16 = 0u16;
-    while copied < psock.readlen && psock.buf.left > 0u16 {
-        psock.buf.ptr[copied as usize] = psock.readptr[copied as usize];
-        copied = copied + 1u16;
-        psock.buf.left = psock.buf.left - 1u16;
-    }
-    if copied < psock.readlen {
-        psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (copied as usize)) as &byte;
-        psock.readlen = psock.readlen - copied;
-        psock.lastlen = copied;
+    while true {
+        while psock.readlen < psock.buf.left {
+            var i: u16 = 0u16;
+            while i < psock.readlen {
+                psock.buf.ptr[i as usize] = psock.readptr[i as usize];
+                i = i + 1u16;
+            }
+            psock.buf.ptr = @ptr_from_usize(@usize_from_ptr(psock.buf.ptr as &void) + (psock.readlen as usize)) as &byte;
+            psock.buf.left = psock.buf.left - psock.readlen;
+            psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (psock.readlen as usize)) as &byte;
+            psock.lastlen = psock.readlen;
+            psock.readlen = 0u16;
+            psock.state = (PSOCK_STATE_BLOCKED_NEWDATA as! byte).value;
+            return PT_WAITING as byte;
+        }
+        var i: u16 = 0u16;
+        while i < psock.buf.left {
+            psock.buf.ptr[i as usize] = psock.readptr[i as usize];
+            i = i + 1u16;
+        }
+        psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (psock.buf.left as usize)) as &byte;
+        psock.readlen = psock.readlen - psock.buf.left;
+        psock.lastlen = psock.buf.left;
+        psock.buf.ptr = @ptr_from_usize(@usize_from_ptr(psock.buf.ptr as &void) + (psock.buf.left as usize)) as &byte;
+        psock.buf.left = 0u16;
+        if psock.readlen == 0u16 {
+            psock.state = (PSOCK_STATE_NONE as! byte).value;
+            if psock_datalen(psock) == 0u16 {
+                return pt_restart(&psock.psockpt);
+            }
+        } else {
+            psock.state = (PSOCK_STATE_READ as! byte).value;
+        }
         return PT_ENDED as byte;
     }
-    psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (psock.readlen as usize)) as &byte;
-    psock.lastlen = psock.readlen;
-    psock.readlen = 0u16;
-    if psock_datalen(psock) == 0u16 {
-        psock.state = 0 as byte;
-        return pt_restart(&psock.psockpt);
-    }
-    psock.state = 0 as byte;
-    return PT_ENDED as byte;
 }
 
 export fn psock_readto(psock: &Psock, endmarker: byte, input: &byte, input_len: u16) byte {
     psock_buf_setup(&psock.buf, psock.bufptr, psock.bufsize);
-    if input_len == 0u16 && psock.readlen == 0u16 {
-        psock.state = 3 as byte;
-        return PT_WAITING as byte;
-    }
-    psock.state = 2 as byte;
     if psock.readlen == 0u16 {
+        if input_len == 0u16 {
+            psock.state = (PSOCK_STATE_BLOCKED_NEWDATA as! byte).value;
+            return PT_WAITING as byte;
+        }
+        psock.state = (PSOCK_STATE_READ as! byte).value;
         psock.readptr = input;
         psock.readlen = input_len;
     }
-    var copied: u16 = 0u16;
-    while copied < psock.readlen && psock.buf.left > 0u16 {
-        const current: byte = psock.readptr[copied as usize];
-        psock.buf.ptr[copied as usize] = current;
-        psock.buf.left = psock.buf.left - 1u16;
-        copied = copied + 1u16;
-        if current == endmarker {
-            psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (copied as usize)) as &byte;
-            psock.readlen = psock.readlen - copied;
-            psock.lastlen = copied;
-            if psock_datalen(psock) == 0u16 {
-                psock.state = 0 as byte;
-                return pt_restart(&psock.psockpt);
+    while true {
+        var copied: u16 = 0u16;
+        var found: bool = false;
+        while copied < psock.readlen && psock.buf.left > 0u16 {
+            const current: byte = psock.readptr[copied as usize];
+            const dst: &byte = @ptr_from_usize(@usize_from_ptr(psock.buf.ptr as &void) + (copied as usize)) as &byte;
+            dst[0] = current;
+            copied = copied + 1u16;
+            if current == endmarker {
+                found = true;
+                break;
             }
-            psock.state = 0 as byte;
-            return PT_ENDED as byte;
         }
-    }
-    psock.lastlen = copied;
-    if copied < psock.readlen {
+        psock.buf.ptr = @ptr_from_usize(@usize_from_ptr(psock.buf.ptr as &void) + (copied as usize)) as &byte;
+        psock.buf.left = psock.buf.left - copied;
         psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (copied as usize)) as &byte;
         psock.readlen = psock.readlen - copied;
+        psock.lastlen = copied;
+        if found {
+            psock.state = (PSOCK_STATE_NONE as! byte).value;
+            if psock_datalen(psock) == 0u16 {
+                return pt_restart(&psock.psockpt);
+            }
+            return PT_ENDED as byte;
+        }
+        if psock.buf.left == 0u16 {
+            while psock.readlen > 0u16 {
+                const current: byte = psock.readptr[0usize];
+                psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + 1usize) as &byte;
+                psock.readlen = psock.readlen - 1u16;
+                if current == endmarker {
+                    psock.state = (PSOCK_STATE_NONE as! byte).value;
+                    return PT_ENDED as byte;
+                }
+            }
+            psock.state = (PSOCK_STATE_READ as! byte).value;
+            return PT_WAITING as byte;
+        }
+        psock.state = (PSOCK_STATE_READ as! byte).value;
         return PT_WAITING as byte;
     }
-    psock.readptr = @ptr_from_usize(@usize_from_ptr(psock.readptr as &void) + (psock.readlen as usize)) as &byte;
-    psock.readlen = 0u16;
-    return PT_WAITING as byte;
 }
 
 export fn timer_set(t: &Timer, interval: u64, now: u64) void {

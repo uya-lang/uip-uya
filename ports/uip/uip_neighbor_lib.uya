@@ -1,0 +1,111 @@
+export struct UipIpAddr { words: [u16: 2] }
+extern fn uip_ipaddr_copy(dest: &UipIpAddr, src: &UipIpAddr) void;
+extern fn uip_ipaddr_cmp(addr1: &UipIpAddr, addr2: &UipIpAddr) bool;
+
+export struct UipEthAddr { addr: [byte: 6] }
+export struct UipNeighborAddr { addr: UipEthAddr }
+export struct UipNeighborEntry { ipaddr: UipIpAddr, addr: UipNeighborAddr, time: byte }
+export struct UipNeighborState { entries: [UipNeighborEntry: 8] }
+export struct UipIpv6Hdr { vtc: byte, tcflow: byte, flow: [byte: 2], len: [byte: 2], proto: byte, ttl: byte, srcipaddr: [u16: 8], destipaddr: [u16: 8] }
+export struct UipIcmp6NeighborHdr { type: byte, code: byte, icmpchksum: u16, flags: [byte: 4], targetipaddr: [u16: 8] }
+
+export const ICMP6_NS: i32 = 135;
+export const IPV6_ICMP6_REPLY_READY: i32 = 1;
+export const IPV6_ICMP6_DROP: i32 = 3;
+
+fn neighbor_addr_copy(dst: &UipNeighborAddr, src: &UipNeighborAddr) void {
+    dst.addr.addr[0] = src.addr.addr[0];
+    dst.addr.addr[1] = src.addr.addr[1];
+    dst.addr.addr[2] = src.addr.addr[2];
+    dst.addr.addr[3] = src.addr.addr[3];
+    dst.addr.addr[4] = src.addr.addr[4];
+    dst.addr.addr[5] = src.addr.addr[5];
+}
+
+fn neighbor_entry_matches(entry: &UipNeighborEntry, ipaddr: &UipIpAddr) bool {
+    return entry.time < (128 as byte) && uip_ipaddr_cmp(&entry.ipaddr, ipaddr);
+}
+
+fn neighbor_icmp6_is_ns(hdr: &UipIcmp6NeighborHdr) bool { return hdr.type == ((ICMP6_NS as! byte).value); }
+
+fn u16_swap(val: u16) u16 {
+    return ((val & 255u16) << 8) | ((val >> 8) & 255u16);
+}
+
+fn ipv6_tail_to_ipaddr(addr: &u16) UipIpAddr {
+    return UipIpAddr { words: [u16_swap(addr[6]), u16_swap(addr[7])] };
+}
+
+export fn uip_neighbor_init(state: &UipNeighborState) void {
+    var i: usize = 0;
+    while i < @len(state.entries) {
+        state.entries[i].time = 128 as byte;
+        i = i + 1;
+    }
+}
+
+export fn uip_neighbor_periodic(state: &UipNeighborState) void {
+    var i: usize = 0;
+    while i < @len(state.entries) {
+        if state.entries[i].time < (128 as byte) {
+            state.entries[i].time = state.entries[i].time + (1 as byte);
+        }
+        i = i + 1;
+    }
+}
+
+export fn uip_neighbor_add(state: &UipNeighborState, ipaddr: &UipIpAddr, addr: &UipNeighborAddr) void {
+    var oldest: usize = 0;
+    var oldest_time: byte = 0 as byte;
+    var i: usize = 0;
+    while i < @len(state.entries) {
+        if state.entries[i].time == (128 as byte) {
+            oldest = i;
+            break;
+        }
+        if neighbor_entry_matches(&state.entries[i], ipaddr) {
+            oldest = i;
+            break;
+        }
+        if state.entries[i].time > oldest_time {
+            oldest = i;
+            oldest_time = state.entries[i].time;
+        }
+        i = i + 1;
+    }
+    uip_ipaddr_copy(&state.entries[oldest].ipaddr, ipaddr);
+    neighbor_addr_copy(&state.entries[oldest].addr, addr);
+    state.entries[oldest].time = 0 as byte;
+}
+
+export fn uip_neighbor_update(state: &UipNeighborState, ipaddr: &UipIpAddr) void {
+    var i: usize = 0;
+    while i < @len(state.entries) {
+        if neighbor_entry_matches(&state.entries[i], ipaddr) {
+            state.entries[i].time = 0 as byte;
+            return;
+        }
+        i = i + 1;
+    }
+}
+
+export fn uip_neighbor_lookup(state: &UipNeighborState, ipaddr: &UipIpAddr, out: &UipNeighborAddr) bool {
+    var i: usize = 0;
+    while i < @len(state.entries) {
+        if neighbor_entry_matches(&state.entries[i], ipaddr) {
+            neighbor_addr_copy(out, &state.entries[i].addr);
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+export fn uip_ipv6_neighbor_ns_bridge(state: &UipNeighborState, ip: &UipIpv6Hdr, hdr: &UipIcmp6NeighborHdr, lladdr: &UipNeighborAddr) byte {
+    if !neighbor_icmp6_is_ns(hdr) {
+        return (IPV6_ICMP6_DROP as! byte).value;
+    }
+    const src: UipIpAddr = ipv6_tail_to_ipaddr(&ip.srcipaddr[0]);
+    uip_neighbor_add(state, &src, lladdr);
+    return (IPV6_ICMP6_REPLY_READY as! byte).value;
+}

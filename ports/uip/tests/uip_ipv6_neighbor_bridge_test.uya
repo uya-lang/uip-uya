@@ -1,0 +1,50 @@
+use std.testing;
+
+extern const UIP_PROTO_ICMP6: i32;
+extern const ICMP6_NS: i32;
+extern const IPV6_ICMP6_REPLY_READY: i32;
+extern const IPV6_ICMP6_DROP: i32;
+extern fn ipv6_input_neighbor_bridge(ip: &UipIpv6Hdr, hdr: &UipIcmp6NeighborHdr, bridge_result: byte) byte;
+extern fn uip_neighbor_init(state: &UipNeighborState) void;
+extern fn uip_neighbor_lookup(state: &UipNeighborState, ipaddr: &UipIpAddr, out: &UipNeighborAddr) bool;
+extern fn uip_ipv6_neighbor_ns_bridge(state: &UipNeighborState, ip: &UipIpv6Hdr, hdr: &UipIcmp6NeighborHdr, lladdr: &UipNeighborAddr) byte;
+extern fn uip_ipaddr(a: byte, b: byte, c: byte, d: byte) UipIpAddr;
+
+struct UipIpAddr { words: [u16: 2] }
+struct UipEthAddr { addr: [byte: 6] }
+struct UipNeighborAddr { addr: UipEthAddr }
+struct UipNeighborEntry { ipaddr: UipIpAddr, addr: UipNeighborAddr, time: byte }
+struct UipNeighborState { entries: [UipNeighborEntry: 8] }
+struct UipIpv6Hdr { vtc: byte, tcflow: byte, flow: [byte: 2], len: [byte: 2], proto: byte, ttl: byte, srcipaddr: [u16: 8], destipaddr: [u16: 8] }
+struct UipIcmp6NeighborHdr { type: byte, code: byte, icmpchksum: u16, flags: [byte: 4], targetipaddr: [u16: 8] }
+
+fn mac(a: byte, b: byte, c: byte, d: byte, e: byte, f: byte) UipNeighborAddr {
+    return UipNeighborAddr { addr: UipEthAddr { addr: [a, b, c, d, e, f] } };
+}
+
+test "ipv6_input_neighbor_bridge returns injected result for ns" {
+    var ip: UipIpv6Hdr = UipIpv6Hdr { vtc: 0x60 as byte, tcflow: 0 as byte, flow: [0 as byte, 0 as byte], len: [0 as byte, 24 as byte], proto: (UIP_PROTO_ICMP6 as! byte).value, ttl: 32 as byte, srcipaddr: [1u16,2u16,3u16,4u16,5u16,6u16,7u16,8u16], destipaddr: [9u16,10u16,11u16,12u16,13u16,14u16,15u16,16u16] };
+    var ns: UipIcmp6NeighborHdr = UipIcmp6NeighborHdr { type: (ICMP6_NS as! byte).value, code: 0 as byte, icmpchksum: 0u16, flags: [0 as byte,0 as byte,0 as byte,0 as byte], targetipaddr: [100u16,101u16,102u16,103u16,104u16,105u16,106u16,107u16] };
+    try assert_eq_i32(ipv6_input_neighbor_bridge(&ip, &ns, (IPV6_ICMP6_REPLY_READY as! byte).value) as i32, IPV6_ICMP6_REPLY_READY);
+    try assert_eq_i32(ipv6_input_neighbor_bridge(&ip, &ns, (IPV6_ICMP6_DROP as! byte).value) as i32, IPV6_ICMP6_DROP);
+}
+
+test "ipv6 neighbor bridge closes loop from ns learning to core reply result" {
+    var state: UipNeighborState = UipNeighborState {
+        entries: [UipNeighborEntry {
+            ipaddr: UipIpAddr { words: [0u16, 0u16] },
+            addr: mac(0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte),
+            time: 128 as byte
+        }: 8]
+    };
+    uip_neighbor_init(&state);
+    var ip: UipIpv6Hdr = UipIpv6Hdr { vtc: 0x60 as byte, tcflow: 0 as byte, flow: [0 as byte, 0 as byte], len: [0 as byte, 24 as byte], proto: (UIP_PROTO_ICMP6 as! byte).value, ttl: 32 as byte, srcipaddr: [0u16,0u16,0u16,0u16,0u16,0u16,0xc0a8u16,0x0009u16], destipaddr: [0u16,0u16,0u16,0u16,0u16,0u16,0xc0a8u16,0x0001u16] };
+    var ns: UipIcmp6NeighborHdr = UipIcmp6NeighborHdr { type: (ICMP6_NS as! byte).value, code: 0 as byte, icmpchksum: 0u16, flags: [0 as byte,0 as byte,0 as byte,0 as byte], targetipaddr: [0u16,0u16,0u16,0u16,0u16,0u16,0xc0a8u16,0x0001u16] };
+    const ll: UipNeighborAddr = mac(1 as byte, 2 as byte, 3 as byte, 4 as byte, 5 as byte, 6 as byte);
+    const bridge_result: byte = uip_ipv6_neighbor_ns_bridge(&state, &ip, &ns, &ll);
+    try assert_eq_i32(ipv6_input_neighbor_bridge(&ip, &ns, bridge_result) as i32, IPV6_ICMP6_REPLY_READY);
+    const learned: UipIpAddr = uip_ipaddr(192, 168, 0, 9);
+    var out: UipNeighborAddr = mac(0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte);
+    try assert_eq_bool(uip_neighbor_lookup(&state, &learned, &out), true);
+    try assert_eq_i32(out.addr.addr[0] as i32, 1);
+}

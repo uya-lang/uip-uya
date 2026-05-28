@@ -121,15 +121,15 @@
 
 为避免 TCP 与 UDP 测试相互干扰，测试已按职责拆分：
 
-- `ports/uip/tests/uip_core_base_test.uya`：基础类型、地址、校验和、定时器等核心能力（**已切到 `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`**)
-- `ports/uip/tests/state_and_timer_test.uya`：状态初始化、监听、连接分配、UDP 连接管理（**已切到 `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`**)
+- `ports/uip/tests/uip_core_base_test.uya`：基础类型、地址、校验和、定时器等核心能力（**已切到 `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`**)
+- `ports/uip/tests/state_and_timer_test.uya`：状态初始化、监听、连接分配、UDP 连接管理（**已切到 `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`**)
 - `ports/uip/tests/uip_tcp_core_test.uya`：TCP 核心处理逻辑
 - `ports/uip/tests/uip_tcp_handshake_test.uya`：TCP 握手与状态迁移
 - `ports/uip/tests/udp_test.uya`：UDP 收发与路由逻辑
-- `ports/uip/tests/uip_arp_test.uya` / `ports/uip/tests/arp_test.uya`：ARP 相关行为
+- `ports/uip/tests/uip_arp_test.uya`：ARP 相关行为
 - `ports/uip/tests/uiplib_ipaddrconv_test.uya`：`uiplib_ipaddrconv` 聚焦测试
 - `ports/uip/tests/core_primitives_test.uya`：部分基础原语测试
-- `ports/uip/tests/uip_neighbor_test.uya`：邻居表初始化、老化、更新、查找与替换策略（**已切到 `ports/uip/uip_fw_core.uya`**)
+- `ports/uip/tests/uip_neighbor_test.uya`：邻居表初始化、老化、更新、查找与替换策略（**已切到 `ports/uip/uip_base.uya` + `ports/uip/uip_fw_core.uya`**)
 - `ports/uip/tests/uip_fw_test.uya`：转发接口选择、默认路由、TTL 递减与去重缓存
 - `ports/uip/tests/uip_split_test.uya`：满尺寸 TCP 报文拆分发送
 - `ports/uip/tests/lc_test.uya`：local continuation 最小状态层
@@ -144,22 +144,25 @@
 - `ports/uip/tests/lc_test.uya` → `ports/uip/uip_proto.uya`
 - `ports/uip/tests/pt_test.uya` → `ports/uip/uip_proto.uya`
 - `ports/uip/tests/psock_test.uya` → `ports/uip/uip_proto.uya`
-- `ports/uip/tests/uip_arp_test.uya` / `ports/uip/tests/arp_test.uya` → `ports/uip/uip_arp.uya`
-- `ports/uip/tests/uip_fw_test.uya` → `ports/uip/uip_fw_core.uya`
-- `ports/uip/tests/uip_neighbor_test.uya` → `ports/uip/uip_fw_core.uya`
-- `ports/uip/tests/uip_split_test.uya` → `ports/uip/uip_fw_core.uya`
-- `ports/uip/tests/uip_runtime_features_test.uya` → `ports/uip/uip_core.uya`
-- `ports/uip/tests/uip_reass_test.uya` → `ports/uip/uip_core.uya`
-- `ports/uip/tests/core_primitives_test.uya` → `ports/uip/uip_core.uya`
-- `ports/uip/tests/uiplib_ipaddrconv_test.uya` → `ports/uip/uip_core.uya`
-- `ports/uip/tests/state_and_timer_test.uya` → `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`
-- `ports/uip/tests/uip_core_base_test.uya` → `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`
-- `ports/uip/tests/udp_test.uya` → `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`
-- `ports/uip/tests/uip_tcp_core_test.uya` → `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`
-- `ports/uip/tests/uip_tcp_handshake_test.uya` → `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`
+- `ports/uip/tests/uip_arp_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_arp.uya`
+- `ports/uip/tests/uip_fw_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_fw_core.uya`
+- `ports/uip/tests/uip_neighbor_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_fw_core.uya`
+- `ports/uip/tests/uip_split_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_fw_core.uya`
+- `ports/uip/tests/uip_runtime_features_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya`
+- `ports/uip/tests/uip_reass_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya`
+- `ports/uip/tests/uip_ipv6_basic_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya`
+- `ports/uip/tests/core_primitives_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya`
+- `ports/uip/tests/uiplib_ipaddrconv_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya`
+- `ports/uip/tests/state_and_timer_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`
+- `ports/uip/tests/uip_core_base_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`
+- `ports/uip/tests/udp_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`
+- `ports/uip/tests/uip_tcp_core_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya` + `ports/uip/uip_arp.uya`
+- `ports/uip/tests/uip_tcp_handshake_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`
+- `ports/uip/tests/uip_ipv6_neighbor_bridge_test.uya` / `ports/uip/tests/uip_ipv6_neighbor_glue_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya` + `ports/uip/uip_fw_core.uya`
 
 ### 当前 `uiplib.uya` 的角色
-- `ports/uip/uiplib.uya` 仍保留历史实现，继续作为兼容入口
+- `ports/uip/uiplib.uya` 已降级为轻量兼容入口，不再承载主实现
+- 公共基础定义已收敛到 `ports/uip/uip_base.uya`
 - 但当前 `ports/uip/tests/*.uya` 已全部具备更小的模块化测试入口，不再要求统一依赖 `uiplib.uya`
 
 ## 运行方式
@@ -168,20 +171,22 @@
 
 ```bash
 # 推荐：按拆分模块运行更小的测试编译入口
-./uya/bin/uya test ports/uip/tests/uip_runtime_features_test.uya ports/uip/uip_core.uya
-./uya/bin/uya test ports/uip/tests/uip_reass_test.uya ports/uip/uip_core.uya
-./uya/bin/uya test ports/uip/tests/core_primitives_test.uya ports/uip/uip_core.uya
-./uya/bin/uya test ports/uip/tests/uiplib_ipaddrconv_test.uya ports/uip/uip_core.uya
-./uya/bin/uya test ports/uip/tests/state_and_timer_test.uya ports/uip/uip_core.uya ports/uip/uip_proto.uya
-./uya/bin/uya test ports/uip/tests/uip_core_base_test.uya ports/uip/uip_core.uya ports/uip/uip_proto.uya
-./uya/bin/uya test ports/uip/tests/udp_test.uya ports/uip/uip_core.uya ports/uip/uip_proto.uya
-./uya/bin/uya test ports/uip/tests/uip_tcp_core_test.uya ports/uip/uip_core.uya ports/uip/uip_proto.uya
-./uya/bin/uya test ports/uip/tests/uip_tcp_handshake_test.uya ports/uip/uip_core.uya ports/uip/uip_proto.uya
-./uya/bin/uya test ports/uip/tests/uip_arp_test.uya ports/uip/uip_arp.uya
-./uya/bin/uya test ports/uip/tests/arp_test.uya ports/uip/uip_arp.uya
-./uya/bin/uya test ports/uip/tests/uip_fw_test.uya ports/uip/uip_fw_core.uya
-./uya/bin/uya test ports/uip/tests/uip_neighbor_test.uya ports/uip/uip_fw_core.uya
-./uya/bin/uya test ports/uip/tests/uip_split_test.uya ports/uip/uip_fw_core.uya
+./uya/bin/uya test ports/uip/tests/uip_runtime_features_test.uya ports/uip/uip_base.uya ports/uip/uip_core.uya
+./uya/bin/uya test ports/uip/tests/uip_reass_test.uya ports/uip/uip_base.uya ports/uip/uip_core.uya
+./uya/bin/uya test ports/uip/tests/uip_ipv6_basic_test.uya ports/uip/uip_base.uya ports/uip/uip_core.uya
+./uya/bin/uya test ports/uip/tests/core_primitives_test.uya ports/uip/uip_base.uya ports/uip/uip_core.uya
+./uya/bin/uya test ports/uip/tests/uiplib_ipaddrconv_test.uya ports/uip/uip_base.uya ports/uip/uip_core.uya
+./uya/bin/uya test ports/uip/tests/state_and_timer_test.uya ports/uip/uip_base.uya ports/uip/uip_core.uya ports/uip/uip_proto.uya
+./uya/bin/uya test ports/uip/tests/uip_core_base_test.uya ports/uip/uip_base.uya ports/uip/uip_core.uya ports/uip/uip_proto.uya
+./uya/bin/uya test ports/uip/tests/udp_test.uya ports/uip/uip_base.uya ports/uip/uip_core.uya ports/uip/uip_proto.uya
+./uya/bin/uya test ports/uip/tests/uip_tcp_core_test.uya ports/uip/uip_base.uya ports/uip/uip_core.uya ports/uip/uip_proto.uya ports/uip/uip_arp.uya
+./uya/bin/uya test ports/uip/tests/uip_tcp_handshake_test.uya ports/uip/uip_base.uya ports/uip/uip_core.uya ports/uip/uip_proto.uya
+./uya/bin/uya test ports/uip/tests/uip_arp_test.uya ports/uip/uip_base.uya ports/uip/uip_arp.uya
+./uya/bin/uya test ports/uip/tests/uip_fw_test.uya ports/uip/uip_base.uya ports/uip/uip_fw_core.uya
+./uya/bin/uya test ports/uip/tests/uip_neighbor_test.uya ports/uip/uip_base.uya ports/uip/uip_fw_core.uya
+./uya/bin/uya test ports/uip/tests/uip_split_test.uya ports/uip/uip_base.uya ports/uip/uip_fw_core.uya
+./uya/bin/uya test ports/uip/tests/uip_ipv6_neighbor_bridge_test.uya ports/uip/uip_base.uya ports/uip/uip_core.uya ports/uip/uip_fw_core.uya
+./uya/bin/uya test ports/uip/tests/uip_ipv6_neighbor_glue_test.uya ports/uip/uip_base.uya ports/uip/uip_core.uya ports/uip/uip_fw_core.uya
 ./uya/bin/uya test ports/uip/tests/lc_test.uya ports/uip/uip_proto.uya
 ./uya/bin/uya test ports/uip/tests/pt_test.uya ports/uip/uip_proto.uya
 ./uya/bin/uya test ports/uip/tests/psock_test.uya ports/uip/uip_proto.uya
@@ -192,7 +197,7 @@
 ```bash
 # 仅示意：按测试归属选择模块入口，不建议统一绑定 uiplib.uya
 ./uya/bin/uya test ports/uip/tests/lc_test.uya ports/uip/uip_proto.uya
-./uya/bin/uya test ports/uip/tests/uip_arp_test.uya ports/uip/uip_arp.uya
+./uya/bin/uya test ports/uip/tests/uip_arp_test.uya ports/uip/uip_base.uya ports/uip/uip_arp.uya
 ./uya/bin/uya test ports/uip/tests/uip_fw_test.uya ports/uip/uip_fw_core.uya
 ./uya/bin/uya test ports/uip/tests/uip_reass_test.uya ports/uip/uip_core.uya
 ```

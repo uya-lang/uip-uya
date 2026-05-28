@@ -1,0 +1,113 @@
+// Shared uIP base declarations and helpers.
+
+export const UIP_LLH_LEN: i32 = 14;
+export const UIP_IPH_LEN: i32 = 20;
+export const UIP_UDPH_LEN: i32 = 8;
+export const UIP_TCPH_LEN: i32 = 20;
+export const UIP_IPUDPH_LEN: i32 = 28;
+export const UIP_IPTCPH_LEN: i32 = 40;
+export const UIP_TCPIP_HLEN: i32 = 40;
+export const UIP_BUFSIZE: i32 = 400;
+export const UIP_TTL: i32 = 64;
+export const UIP_BYTE_ORDER: i32 = 3412;
+export const UIP_CONNS: i32 = 10;
+export const UIP_LISTENPORTS: i32 = 20;
+export const UIP_TCP_MSS: i32 = 346;
+export const UIP_RECEIVE_WINDOW: i32 = 346;
+export const UIP_ACKDATA: i32 = 1;
+export const UIP_NEWDATA: i32 = 2;
+export const UIP_REXMIT: i32 = 4;
+export const UIP_POLL: i32 = 8;
+export const UIP_CLOSE: i32 = 16;
+export const UIP_ABORT: i32 = 32;
+export const UIP_CONNECTED: i32 = 64;
+export const UIP_TIMEDOUT: i32 = 128;
+export const UIP_DATA: i32 = 1;
+export const UIP_TIMER: i32 = 2;
+export const UIP_POLL_REQUEST: i32 = 3;
+export const UIP_UDP_SEND_CONN: i32 = 4;
+export const UIP_UDP_TIMER: i32 = 5;
+export const UIP_CLOSED: i32 = 0;
+export const UIP_SYN_RCVD: i32 = 1;
+export const UIP_SYN_SENT: i32 = 2;
+export const UIP_ESTABLISHED: i32 = 3;
+export const UIP_FIN_WAIT_1: i32 = 4;
+export const UIP_FIN_WAIT_2: i32 = 5;
+export const UIP_CLOSING: i32 = 6;
+export const UIP_TIME_WAIT: i32 = 7;
+export const UIP_LAST_ACK: i32 = 8;
+export const UIP_STOPPED: i32 = 16;
+export const UIP_TIME_WAIT_TIMEOUT: i32 = 120;
+export const UIP_REASS_MAXAGE: i32 = 40;
+export const UIP_REASS_BUFSIZE: i32 = 386;
+export const UIP_REASS_FLAG_LASTFRAG: i32 = 0x01;
+export const UIP_ETHTYPE_IP: i32 = 0x0800;
+export const UIP_ETHTYPE_ARP: i32 = 0x0806;
+export const UIP_ETHTYPE_IP6: i32 = 0x86dd;
+export const UIP_PROTO_ICMP: i32 = 1;
+export const UIP_PROTO_TCP: i32 = 6;
+export const UIP_PROTO_UDP: i32 = 17;
+export const UIP_PROTO_ICMP6: i32 = 58;
+export const ARP_REQUEST: i32 = 1;
+export const ARP_REPLY: i32 = 2;
+export const TCP_FIN: i32 = 0x01;
+export const TCP_SYN: i32 = 0x02;
+export const TCP_RST: i32 = 0x04;
+export const TCP_ACK: i32 = 0x10;
+export const TCP_URG: i32 = 0x20;
+export const TCP_OPT_MSS: i32 = 2;
+export const TCP_OPT_MSS_LEN: i32 = 4;
+export const UIP_LOG_NONE: i32 = 0;
+export const UIP_LOG_TCP_URG: i32 = 1;
+export const UIP_LOG_DATA: i32 = 2;
+export const UIP_LOG_RST: i32 = 3;
+
+export struct UipStatsBlock { drop: u16, recv: u16, sent: u16, a: u16, b: u16, c: u16, d: u16, e: u16, f: u16 }
+export struct UipStatsUdpBlock { drop: u16, recv: u16, sent: u16, chkerr: u16 }
+export struct UipStats { ip: UipStatsBlock, icmp: UipStatsBlock, tcp: UipStatsBlock, udp: UipStatsUdpBlock }
+export struct UipRuntimeBase { frame: UipFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, len: u16, slen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, acc32: [byte: 4], ipid: u16, iss: [byte: 4] }
+
+export struct UipIp6Addr { words: [u16: 8] }
+export struct UipIpAddr { words: [u16: 2] }
+export struct UipEthAddr { addr: [byte: 6] }
+export struct UipEthHdr { dest: UipEthAddr, src: UipEthAddr, type: u16 }
+export struct ArpHdr { ethhdr: UipEthHdr, hwtype: u16, protocol: u16, hwlen: byte, protolen: byte, opcode: u16, shwaddr: UipEthAddr, sipaddr: [u16: 2], dhwaddr: UipEthAddr, dipaddr: [u16: 2] }
+export struct EthIpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2] }
+export struct EthTcpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, seqno: [byte: 4], ackno: [byte: 4], tcpoffset: byte, flags: byte, wnd: [byte: 2], tcpchksum: u16, urgp: u16, optdata: [byte: 4] }
+export struct EthUdpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, udplen: u16, udpchksum: u16 }
+export struct UipFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
+export struct UipUdpipHdr { vtc: byte, tcflow: byte, flow: u16, len: [byte: 2], proto: byte, ttl: byte, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, udplen: u16, udpchksum: u16 }
+export struct UipTcpipHdr { vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16 }
+export struct UipIpv6Hdr { vtc: byte, tcflow: byte, flow: [byte: 2], len: [byte: 2], proto: byte, ttl: byte, srcipaddr: [u16: 8], destipaddr: [u16: 8] }
+export struct UipIcmp6Hdr { type: byte, code: byte, icmpchksum: u16, data: [byte: 4] }
+export struct UipIcmp6NeighborHdr { type: byte, code: byte, icmpchksum: u16, flags: [byte: 4], targetipaddr: [u16: 8] }
+
+export fn htons(val: u16) u16 { return ((val & 255u16) << 8) | ((val >> 8) & 255u16); }
+export fn ntohs(val: u16) u16 { return htons(val); }
+
+export fn uip_ipaddr(a: byte, b: byte, c: byte, d: byte) UipIpAddr {
+    return UipIpAddr { words: [htons((((a as u16) << 8u16) | (b as u16))), htons((((c as u16) << 8u16) | (d as u16)))] };
+}
+
+export fn uip_ipaddr_copy(dest: &UipIpAddr, src: &UipIpAddr) void {
+    dest.words[0] = src.words[0];
+    dest.words[1] = src.words[1];
+}
+
+export fn uip_ipaddr_cmp(addr1: &UipIpAddr, addr2: &UipIpAddr) bool {
+    return addr1.words[0] == addr2.words[0] && addr1.words[1] == addr2.words[1];
+}
+
+export fn uip_ipaddr_maskcmp(addr1: &UipIpAddr, addr2: &UipIpAddr, mask: &UipIpAddr) bool {
+    return ((addr1.words[0] & mask.words[0]) == (addr2.words[0] & mask.words[0])) && ((addr1.words[1] & mask.words[1]) == (addr2.words[1] & mask.words[1]));
+}
+
+export fn uip_ipaddr_mask(dest: &UipIpAddr, src: &UipIpAddr, mask: &UipIpAddr) void {
+    dest.words[0] = src.words[0] & mask.words[0];
+    dest.words[1] = src.words[1] & mask.words[1];
+}
+
+export fn uip_ipaddr1(addr: &UipIpAddr) byte { return (((ntohs(addr.words[0]) >> 8) & 255u16) as! byte).value; }
+export fn uip_ipaddr2(addr: &UipIpAddr) byte { return ((ntohs(addr.words[0]) & 255u16) as! byte).value; }
+export fn uip_ipaddr3(addr: &UipIpAddr) byte { return (((ntohs(addr.words[1]) >> 8) & 255u16) as! byte).value; }
+export fn uip_ipaddr4(addr: &UipIpAddr) byte { return ((ntohs(addr.words[1]) & 255u16) as! byte).value; }

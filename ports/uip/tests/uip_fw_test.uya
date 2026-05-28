@@ -33,7 +33,7 @@ struct EthUdpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid
 struct ArpHdr { ethhdr: UipEthHdr, hwtype: u16, protocol: u16, hwlen: byte, protolen: byte, opcode: u16, shwaddr: UipEthAddr, sipaddr: [u16: 2], dhwaddr: UipEthAddr, dipaddr: [u16: 2] }
 struct UipFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
 struct UipRuntime { frame: UipFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, len: u16, slen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, acc32: [byte: 4], ipid: u16, iss: [byte: 4], te_reply: bool, stats: &UipStats }
-struct UipFwNetif { ipaddr: UipIpAddr, netmask: UipIpAddr, output_result: byte }
+struct UipFwNetif { ipaddr: UipIpAddr, netmask: UipIpAddr, output_result: byte, output_calls: byte }
 struct UipFwCacheEntry { timer: u16, srcipaddr: UipIpAddr, destipaddr: UipIpAddr, ipid: u16, proto: byte }
 struct UipFwState { netifs: [&UipFwNetif: 4], netif_count: usize, default_index: i32, cache: [UipFwCacheEntry: 2] }
 
@@ -91,7 +91,7 @@ test "uip_fw_output returns zero length when packet is empty" {
 
 test "uip_fw_output selects matching netif" {
     var state: UipFwState = make_fw_state();
-    var netif: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(192,168,0,1), netmask: uip_ipaddr(255,255,255,0), output_result: 7 as byte };
+    var netif: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(192,168,0,1), netmask: uip_ipaddr(255,255,255,0), output_result: 7 as byte, output_calls: 0 as byte };
     uip_fw_register(&state, &netif);
     var rt: UipRuntime = make_runtime();
     rt.len = 40u16;
@@ -103,7 +103,7 @@ test "uip_fw_output selects matching netif" {
 
 test "uip_fw_output falls back to default netif" {
     var state: UipFwState = make_fw_state();
-    var netif: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: 5 as byte };
+    var netif: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: 5 as byte, output_calls: 0 as byte };
     uip_fw_register(&state, &netif);
     uip_fw_default(&state, &netif);
     var rt: UipRuntime = make_runtime();
@@ -126,7 +126,7 @@ test "uip_fw_forward returns local for host destination" {
 
 test "uip_fw_forward decrements ttl and forwards" {
     var state: UipFwState = make_fw_state();
-    var netif: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value };
+    var netif: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value, output_calls: 0 as byte };
     uip_fw_register(&state, &netif);
     uip_fw_default(&state, &netif);
     var rt: UipRuntime = make_runtime();
@@ -170,9 +170,31 @@ test "uip_fw_forward drops duplicate packet from cache" {
     try assert_eq_i32(uip_fw_forward(&state, &rt) as i32, UIP_FW_FORWARDED);
 }
 
-test "uip_fw_forward ttl expiry emits time exceeded style reply" {
+
+
+test "uip_fw_forward broadcast returns local after forwarding" {
     var state: UipFwState = make_fw_state();
-    var netif: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value };
+    var netif0: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value, output_calls: 0 as byte };
+    var netif1: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(192,168,0,1), netmask: uip_ipaddr(255,255,255,0), output_result: (UIP_FW_OK as! byte).value, output_calls: 0 as byte };
+    uip_fw_register(&state, &netif0);
+    uip_fw_register(&state, &netif1);
+    uip_fw_default(&state, &netif0);
+    var rt: UipRuntime = make_runtime();
+    rt.len = 60u16;
+    rt.frame.ethip.ttl = 4 as byte;
+    rt.frame.ethip.ipchksum = htons(0x1000u16);
+    rt.frame.ethip.destipaddr[0] = 0xffffu16;
+    rt.frame.ethip.destipaddr[1] = 0xffffu16;
+    try assert_eq_i32(uip_fw_forward(&state, &rt) as i32, UIP_FW_LOCAL);
+    try assert_eq_i32(rt.frame.ethip.ttl as i32, 3);
+    try assert_eq_i32(netif0.output_calls as i32, 1);
+    try assert_eq_i32(netif1.output_calls as i32, 1);
+}
+
+
+test "uip_fw_forward ttl expiry does not register original packet in duplicate cache" {
+    var state: UipFwState = make_fw_state();
+    var netif: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value, output_calls: 0 as byte };
     uip_fw_register(&state, &netif);
     uip_fw_default(&state, &netif);
     var rt: UipRuntime = make_runtime();
@@ -184,14 +206,14 @@ test "uip_fw_forward ttl expiry emits time exceeded style reply" {
     rt.frame.ethip.srcipaddr[1] = src.words[1];
     rt.frame.ethip.destipaddr[0] = dest.words[0];
     rt.frame.ethip.destipaddr[1] = dest.words[1];
+    rt.frame.ethip.ipid[0] = 0 as byte;
+    rt.frame.ethip.ipid[1] = 11 as byte;
     rt.frame.ethip.proto = 6 as byte;
     rt.frame.ethip.ttl = 1 as byte;
     try assert_eq_i32(uip_fw_forward(&state, &rt) as i32, UIP_FW_FORWARDED);
     try assert_eq_bool(rt.te_reply, true);
-    try assert_eq_i32(rt.len as i32, 56);
-    try assert_eq_i32(rt.frame.ethip.proto as i32, UIP_PROTO_ICMP);
-    try assert_eq_i32(rt.frame.ethip.srcipaddr[0] as i32, rt.hostaddr.words[0] as i32);
-    try assert_eq_i32(rt.frame.ethip.destipaddr[0] as i32, src.words[0] as i32);
-    try assert_eq_bool(rt.frame.ethip.ipchksum != 0u16, true);
+    try assert_eq_i32(state.cache[0].timer as i32, 0);
+    try assert_eq_i32(state.cache[1].timer as i32, 0);
+    try assert_eq_i32(netif.output_calls as i32, 1);
 }
 

@@ -3,9 +3,14 @@ use std.testing;
 extern fn uip_neighbor_init(state: &UipNeighborState) void;
 extern fn uip_neighbor_periodic(state: &UipNeighborState) void;
 extern fn uip_neighbor_add(state: &UipNeighborState, ipaddr: &UipIpAddr, addr: &UipNeighborAddr) void;
-extern fn uip_neighbor_update(state: &UipNeighborState, ipaddr: &UipIpAddr) void;
 extern fn uip_neighbor_lookup(state: &UipNeighborState, ipaddr: &UipIpAddr, out: &UipNeighborAddr) bool;
-extern fn uip_ipaddr(a: byte, b: byte, c: byte, d: byte) UipIpAddr;
+extern fn uip_ipv6_neighbor_ns_bridge(state: &UipNeighborState, ip: &UipIpv6Hdr, hdr: &UipIcmp6NeighborHdr, lladdr: &UipNeighborAddr) byte;
+extern const ICMP6_NS: i32;
+extern const IPV6_ICMP6_REPLY_READY: i32;
+extern const IPV6_ICMP6_DROP: i32;
+
+struct UipIpv6Hdr { vtc: byte, tcflow: byte, flow: [byte: 2], len: [byte: 2], proto: byte, ttl: byte, srcipaddr: [u16: 8], destipaddr: [u16: 8] }
+struct UipIcmp6NeighborHdr { type: byte, code: byte, icmpchksum: u16, flags: [byte: 4], targetipaddr: [u16: 8] }
 
 struct UipIpAddr { words: [u16: 2] }
 struct UipEthAddr { addr: [byte: 6] }
@@ -63,7 +68,8 @@ test "uip_neighbor_periodic ages active entries but not unused ones" {
     try assert_eq_i32(state.entries[1].time as i32, 128);
 }
 
-test "uip_neighbor_update refreshes existing entry" {
+
+test "uip_ipv6_neighbor_ns_bridge learns source and returns reply ready" {
     var state: UipNeighborState = UipNeighborState {
         entries: [UipNeighborEntry {
             ipaddr: UipIpAddr { words: [0u16, 0u16] },
@@ -71,33 +77,32 @@ test "uip_neighbor_update refreshes existing entry" {
             time: 128 as byte
         }: 8]
     };
-    const ip: UipIpAddr = uip_ipaddr(10, 0, 0, 2);
-    const m: UipNeighborAddr = mac(9 as byte, 8 as byte, 7 as byte, 6 as byte, 5 as byte, 4 as byte);
-    uip_neighbor_add(&state, &ip, &m);
-    state.entries[0].time = 11 as byte;
-    uip_neighbor_update(&state, &ip);
-    try assert_eq_i32(state.entries[0].time as i32, 0);
+    uip_neighbor_init(&state);
+    var ip: UipIpv6Hdr = UipIpv6Hdr { vtc: 0x60 as byte, tcflow: 0 as byte, flow: [0 as byte, 0 as byte], len: [0 as byte, 24 as byte], proto: 58 as byte, ttl: 32 as byte, srcipaddr: [0u16,0u16,0u16,0u16,0u16,0u16,0xc0a8u16,0x0009u16], destipaddr: [0u16,0u16,0u16,0u16,0u16,0u16,0xc0a8u16,0x0001u16] };
+    var ns: UipIcmp6NeighborHdr = UipIcmp6NeighborHdr { type: (ICMP6_NS as! byte).value, code: 0 as byte, icmpchksum: 0u16, flags: [0 as byte,0 as byte,0 as byte,0 as byte], targetipaddr: [0u16,0u16,0u16,0u16,0u16,0u16,0xc0a8u16,0x0001u16] };
+    const m: UipNeighborAddr = mac(1 as byte, 2 as byte, 3 as byte, 4 as byte, 5 as byte, 6 as byte);
+    try assert_eq_i32(uip_ipv6_neighbor_ns_bridge(&state, &ip, &ns, &m) as i32, IPV6_ICMP6_REPLY_READY);
+    const learned: UipIpAddr = uip_ipaddr(192, 168, 0, 9);
+    var out: UipNeighborAddr = mac(0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte);
+    try assert_eq_bool(uip_neighbor_lookup(&state, &learned, &out), true);
+    try assert_eq_i32(out.addr.addr[0] as i32, 1);
 }
 
-test "uip_neighbor_add replaces oldest entry when full" {
+test "uip_ipv6_neighbor_ns_bridge drops non ns without learning" {
     var state: UipNeighborState = UipNeighborState {
         entries: [UipNeighborEntry {
             ipaddr: UipIpAddr { words: [0u16, 0u16] },
             addr: mac(0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte),
-            time: 0 as byte
+            time: 128 as byte
         }: 8]
     };
-    var i: usize = 0;
-    while i < 8 {
-        state.entries[i].ipaddr = uip_ipaddr(10, 0, 0, (i as! byte).value);
-        state.entries[i].addr = mac((i as! byte).value, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte);
-        state.entries[i].time = ((i + 1) as! byte).value;
-        i = i + 1;
-    }
-    const ip: UipIpAddr = uip_ipaddr(192, 168, 1, 1);
-    const m: UipNeighborAddr = mac(42 as byte, 43 as byte, 44 as byte, 45 as byte, 46 as byte, 47 as byte);
-    uip_neighbor_add(&state, &ip, &m);
+    uip_neighbor_init(&state);
+    var ip: UipIpv6Hdr = UipIpv6Hdr { vtc: 0x60 as byte, tcflow: 0 as byte, flow: [0 as byte, 0 as byte], len: [0 as byte, 24 as byte], proto: 58 as byte, ttl: 32 as byte, srcipaddr: [0u16,0u16,0u16,0u16,0u16,0u16,0xc0a8u16,0x0009u16], destipaddr: [0u16,0u16,0u16,0u16,0u16,0u16,0xc0a8u16,0x0001u16] };
+    var not_ns: UipIcmp6NeighborHdr = UipIcmp6NeighborHdr { type: 136 as byte, code: 0 as byte, icmpchksum: 0u16, flags: [0 as byte,0 as byte,0 as byte,0 as byte], targetipaddr: [0u16,0u16,0u16,0u16,0u16,0u16,0xc0a8u16,0x0001u16] };
+    const m: UipNeighborAddr = mac(1 as byte, 2 as byte, 3 as byte, 4 as byte, 5 as byte, 6 as byte);
+    try assert_eq_i32(uip_ipv6_neighbor_ns_bridge(&state, &ip, &not_ns, &m) as i32, IPV6_ICMP6_DROP);
+    const learned: UipIpAddr = uip_ipaddr(192, 168, 0, 9);
     var out: UipNeighborAddr = mac(0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte);
-    try assert_eq_bool(uip_neighbor_lookup(&state, &ip, &out), true);
-    try assert_eq_i32(out.addr.addr[0] as i32, 42);
+    try assert_eq_bool(uip_neighbor_lookup(&state, &learned, &out), false);
 }
+
