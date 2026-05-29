@@ -88,7 +88,7 @@ test "uip_ipv6_neighbor_ns_bridge learns source and returns reply ready" {
     try assert_eq_i32(out.addr.addr[0] as i32, 1);
 }
 
-test "uip_ipv6_neighbor_ns_bridge drops non ns without learning" {
+test "uip_ipv6_neighbor_ns_bridge drops unspecified source without learning" {
     var state: UipNeighborState = UipNeighborState {
         entries: [UipNeighborEntry {
             ipaddr: UipIpAddr { words: [0u16, 0u16] },
@@ -97,11 +97,11 @@ test "uip_ipv6_neighbor_ns_bridge drops non ns without learning" {
         }: 8]
     };
     uip_neighbor_init(&state);
-    var ip: UipIpv6Hdr = UipIpv6Hdr { vtc: 0x60 as byte, tcflow: 0 as byte, flow: [0 as byte, 0 as byte], len: [0 as byte, 24 as byte], proto: 58 as byte, ttl: 32 as byte, srcipaddr: [0u16,0u16,0u16,0u16,0u16,0u16,0xc0a8u16,0x0009u16], destipaddr: [0u16,0u16,0u16,0u16,0u16,0u16,0xc0a8u16,0x0001u16] };
-    var not_ns: UipIcmp6NeighborHdr = UipIcmp6NeighborHdr { type: 136 as byte, code: 0 as byte, icmpchksum: 0u16, flags: [0 as byte,0 as byte,0 as byte,0 as byte], targetipaddr: [0u16,0u16,0u16,0u16,0u16,0u16,0xc0a8u16,0x0001u16] };
+    var ip: UipIpv6Hdr = UipIpv6Hdr { vtc: 0x60 as byte, tcflow: 0 as byte, flow: [0 as byte, 0 as byte], len: [0 as byte, 24 as byte], proto: 58 as byte, ttl: 255 as byte, srcipaddr: [0u16,0u16,0u16,0u16,0u16,0u16,0u16,0u16], destipaddr: [0u16,0u16,0u16,0u16,0u16,0u16,0xc0a8u16,0x0001u16] };
+    var ns: UipIcmp6NeighborHdr = UipIcmp6NeighborHdr { type: (ICMP6_NS as! byte).value, code: 0 as byte, icmpchksum: 0u16, flags: [0 as byte,0 as byte,0 as byte,0 as byte], targetipaddr: [0u16,0u16,0u16,0u16,0u16,0u16,0xc0a8u16,0x0001u16] };
     const m: UipNeighborAddr = mac(1 as byte, 2 as byte, 3 as byte, 4 as byte, 5 as byte, 6 as byte);
-    try assert_eq_i32(uip_ipv6_neighbor_ns_bridge(&state, &ip, &not_ns, &m) as i32, IPV6_ICMP6_DROP);
-    const learned: UipIpAddr = uip_ipaddr(192, 168, 0, 9);
+    try assert_eq_i32(uip_ipv6_neighbor_ns_bridge(&state, &ip, &ns, &m) as i32, IPV6_ICMP6_DROP);
+    const learned: UipIpAddr = uip_ipaddr(0, 0, 0, 0);
     var out: UipNeighborAddr = mac(0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte);
     try assert_eq_bool(uip_neighbor_lookup(&state, &learned, &out), false);
 }

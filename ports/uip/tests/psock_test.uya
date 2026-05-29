@@ -10,8 +10,15 @@ extern fn psock_exit(psock: &Psock) byte;
 extern fn psock_close_exit(psock: &Psock) byte;
 extern fn psock_readbuf(psock: &Psock, input: &byte, input_len: u16) byte;
 extern fn psock_readto(psock: &Psock, endmarker: byte, input: &byte, input_len: u16) byte;
+extern fn psock_event_from_uip(flags: byte, len: u16, slen: u16) PsockEvent;
+extern fn psock_event_from_runtime_bridge(rt: &UipRuntimeEventBridge) PsockEvent;
+extern fn psock_event_from_process_result(result: &UipProcessResult, rt: &UipRuntimeEventBridge) PsockEvent;
+extern fn psock_apply_event(psock: &Psock, event: &PsockEvent) void;
+extern fn psock_send_from_event(psock: &Psock, event: &PsockEvent, buf: &byte, mss: u16) byte;
+extern fn psock_generator_send_from_event(psock: &Psock, event: &PsockEvent, generated_len: u16, mss: u16) byte;
+extern fn psock_readbuf_from_event(psock: &Psock, event: &PsockEvent, input: &byte) byte;
+extern fn psock_readto_from_event(psock: &Psock, event: &PsockEvent, endmarker: byte, input: &byte) byte;
 
-extern const PT_WAITING: i32;
 extern const PT_ENDED: i32;
 extern const PT_EXITED: i32;
 
@@ -45,6 +52,37 @@ struct Psock {
     bufsize: usize,
     state: byte,
     lastlen: u16
+}
+
+struct PsockEvent {
+    acked: bool,
+    newdata: bool,
+    rexmit: bool,
+    closed: bool,
+    polled: bool,
+    timed_out: bool,
+    aborted: bool,
+    connected: bool,
+    data_len: u16,
+    send_len: u16
+}
+
+struct UipProcessResult {
+    flags: byte,
+    len: u16,
+    poll: bool,
+    timed_out: bool,
+    retransmit: bool,
+    appcall: bool,
+    closed: bool,
+    logged: bool,
+    urgdata: bool
+}
+
+struct UipRuntimeEventBridge {
+    flags: byte,
+    len: u16,
+    slen: u16
 }
 
 test "psock_generator_refresh resets pointer to regenerated buffer" {
@@ -145,16 +183,17 @@ test "psock_send retransmit keeps pending send active" {
     try assert_eq_i32(ps.lastlen as i32, 3);
 }
 
-test "psock_generator_send rexmit regenerates full pending payload" {
+test "psock_generator_send ack plus rexmit should prefer retransmit and preserve full generated payload" {
     var storage: [byte: 8] = [0: 8];
     var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
     psock_init(&ps, &storage[0], 8);
     _ = psock_generator_send(&ps, 6u16, 4u16, false, false);
     _ = psock_generator_send(&ps, 6u16, 4u16, false, true);
     try assert_eq_i32(ps.sendlen as i32, 2);
-    try assert_eq_i32(psock_generator_send(&ps, 6u16, 4u16, true, false) as i32, PT_WAITING);
+    try assert_eq_i32(psock_generator_send(&ps, 6u16, 4u16, true, true) as i32, PT_WAITING);
     try assert_eq_i32(ps.sendlen as i32, 6);
     try assert_eq_i32(ps.lastlen as i32, 4);
+    try assert_eq_i32(@usize_from_ptr(ps.sendptr as &void) as i32, @usize_from_ptr(ps.bufptr as &void) as i32);
 }
 
 test "psock_close marks blocked close state" {
@@ -238,6 +277,18 @@ test "psock_close overrides send wait state" {
     try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_CLOSE);
 }
 
+test "psock_close prevents later ack from advancing pending send" {
+    var storage: [byte: 8] = [0: 8];
+    var payload: [byte: 5] = [1, 2, 3, 4, 5];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    _ = psock_send(&ps, &payload[0], 5u16, 2u16, false, false);
+    psock_close(&ps);
+    try assert_eq_i32(psock_send(&ps, &payload[0], 5u16, 2u16, false, true) as i32, PT_WAITING);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_CLOSE);
+    try assert_eq_i32(ps.sendlen as i32, 5);
+}
+
 test "psock_close overrides read wait state" {
     var storage: [byte: 8] = [0: 8];
     var input: [byte: 4] = [65, 66, 67, 68];
@@ -247,6 +298,21 @@ test "psock_close overrides read wait state" {
     try assert_eq_i32(ps.state as i32, PSOCK_STATE_READ);
     psock_close(&ps);
     try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_CLOSE);
+}
+
+test "psock_close prevents later read callbacks from consuming new data" {
+    var storage: [byte: 8] = [0: 8];
+    var input1: [byte: 4] = [65, 66, 67, 68];
+    var input2: [byte: 3] = [10, 69, 70];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    _ = psock_readto(&ps, 10 as byte, &input1[0], 4u16);
+    psock_close(&ps);
+    try assert_eq_i32(psock_readto(&ps, 10 as byte, &input2[0], 3u16) as i32, PT_WAITING);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_CLOSE);
+    try assert_eq_i32(psock_datalen(&ps) as i32, 4);
+    try assert_eq_i32(storage[0] as i32, 65);
+    try assert_eq_i32(storage[3] as i32, 68);
 }
 
 
@@ -282,6 +348,19 @@ test "psock_readbuf resumes across multiple input callbacks until buffer fills" 
     try assert_eq_i32(storage[2] as i32, 15);
 }
 
+test "psock_readbuf resumed callback should leave state waiting for next event when buffer becomes full" {
+    var storage: [byte: 5] = [0: 5];
+    var input1: [byte: 2] = [11, 12];
+    var input2: [byte: 3] = [13, 14, 15];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 5);
+    _ = psock_readbuf(&ps, &input1[0], 2u16);
+    try assert_eq_i32(psock_readbuf(&ps, &input2[0], 3u16) as i32, PT_WAITING);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_NEWDATA);
+    try assert_eq_i32(ps.readlen as i32, 0);
+    try assert_eq_bool(psock_newdata(&ps), true);
+}
+
 test "psock_readto resumes across callbacks and ends when marker arrives later" {
     var storage: [byte: 8] = [0: 8];
     var input1: [byte: 3] = [65, 66, 67];
@@ -296,4 +375,142 @@ test "psock_readto resumes across callbacks and ends when marker arrives later" 
     try assert_eq_i32(psock_datalen(&ps) as i32, 2);
     try assert_eq_i32(storage[0] as i32, 68);
     try assert_eq_i32(storage[1] as i32, 10);
+}
+
+test "psock_readto marker completion should clear unread state after success" {
+    var storage: [byte: 8] = [0: 8];
+    var input1: [byte: 3] = [65, 66, 67];
+    var input2: [byte: 3] = [68, 10, 69];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    _ = psock_readto(&ps, 10 as byte, &input1[0], 3u16);
+    try assert_eq_i32(psock_readto(&ps, 10 as byte, &input2[0], 3u16) as i32, PT_ENDED);
+    try assert_eq_i32(ps.readlen as i32, 0);
+    try assert_eq_i32(ps.state as i32, 0);
+}
+
+test "psock_event_from_uip maps runtime flags to psock event bits" {
+    const ev: PsockEvent = psock_event_from_uip(((1 | 2 | 4 | 16) as! byte).value, 7u16, 5u16);
+    try assert_eq_bool(ev.acked, true);
+    try assert_eq_bool(ev.newdata, true);
+    try assert_eq_bool(ev.rexmit, true);
+    try assert_eq_bool(ev.closed, true);
+    try assert_eq_i32(ev.data_len as i32, 7);
+    try assert_eq_i32(ev.send_len as i32, 5);
+}
+
+test "psock_apply_event marks acked read rexmit and close transitions conservatively" {
+    var storage: [byte: 8] = [0: 8];
+    var payload: [byte: 5] = [1, 2, 3, 4, 5];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    _ = psock_send(&ps, &payload[0], 5u16, 2u16, false, false);
+    var ack_ev: PsockEvent = psock_event_from_uip((1 as! byte).value, 0u16, 0u16);
+    psock_apply_event(&ps, &ack_ev);
+    try assert_eq_i32(ps.state as i32, 1);
+    var data_ev: PsockEvent = psock_event_from_uip((2 as! byte).value, 3u16, 0u16);
+    psock_apply_event(&ps, &data_ev);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_READ);
+    var rexmit_ev: PsockEvent = psock_event_from_uip((4 as! byte).value, 0u16, 5u16);
+    ps.sendlen = 5u16;
+    psock_apply_event(&ps, &rexmit_ev);
+    try assert_eq_i32(ps.state as i32, 6);
+    var close_ev: PsockEvent = psock_event_from_uip((16 as! byte).value, 0u16, 0u16);
+    psock_apply_event(&ps, &close_ev);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_CLOSE);
+}
+
+test "psock_apply_event prioritizes close then rexmit then ack then newdata" {
+    var storage: [byte: 8] = [0: 8];
+    var payload: [byte: 5] = [1, 2, 3, 4, 5];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    _ = psock_send(&ps, &payload[0], 5u16, 2u16, false, false);
+    ps.sendlen = 5u16;
+    var combined: PsockEvent = psock_event_from_uip(((1 | 2 | 4) as! byte).value, 3u16, 5u16);
+    psock_apply_event(&ps, &combined);
+    try assert_eq_i32(ps.state as i32, 6);
+    var close_combined: PsockEvent = psock_event_from_uip(((1 | 2 | 4 | 16) as! byte).value, 3u16, 5u16);
+    psock_apply_event(&ps, &close_combined);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_CLOSE);
+}
+
+test "psock_send_from_event drives send state directly from runtime event" {
+    var storage: [byte: 8] = [0: 8];
+    var payload: [byte: 5] = [1, 2, 3, 4, 5];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    var send_ev: PsockEvent = psock_event_from_uip(0 as byte, 0u16, 5u16);
+    try assert_eq_i32(psock_send_from_event(&ps, &send_ev, &payload[0], 2u16) as i32, PT_WAITING);
+    try assert_eq_i32(ps.sendlen as i32, 5);
+    var ack_ev: PsockEvent = psock_event_from_uip((1 as! byte).value, 0u16, 5u16);
+    try assert_eq_i32(psock_send_from_event(&ps, &ack_ev, &payload[0], 2u16) as i32, PT_WAITING);
+    try assert_eq_i32(ps.sendlen as i32, 3);
+}
+
+test "psock_generator_send_from_event retransmits full generated payload" {
+    var storage: [byte: 8] = [0: 8];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    var send_ev: PsockEvent = psock_event_from_uip(0 as byte, 0u16, 6u16);
+    _ = psock_generator_send_from_event(&ps, &send_ev, 6u16, 4u16);
+    var ack_ev: PsockEvent = psock_event_from_uip((1 as! byte).value, 0u16, 6u16);
+    _ = psock_generator_send_from_event(&ps, &ack_ev, 6u16, 4u16);
+    try assert_eq_i32(ps.sendlen as i32, 2);
+    var rexmit_ev: PsockEvent = psock_event_from_uip((4 as! byte).value, 0u16, 6u16);
+    try assert_eq_i32(psock_generator_send_from_event(&ps, &rexmit_ev, 6u16, 4u16) as i32, PT_WAITING);
+    try assert_eq_i32(ps.sendlen as i32, 6);
+}
+
+test "psock_readbuf_from_event and psock_readto_from_event consume runtime-delivered input" {
+    var storage1: [byte: 4] = [0: 4];
+    var input1: [byte: 4] = [10, 11, 12, 13];
+    var ps1: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps1, &storage1[0], 4);
+    var read_ev: PsockEvent = psock_event_from_uip((2 as! byte).value, 4u16, 0u16);
+    try assert_eq_i32(psock_readbuf_from_event(&ps1, &read_ev, &input1[0]) as i32, PT_ENDED);
+    try assert_eq_i32(storage1[0] as i32, 10);
+    try assert_eq_i32(storage1[3] as i32, 13);
+
+    var storage2: [byte: 8] = [0: 8];
+    var input2: [byte: 3] = [65, 10, 66];
+    var ps2: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps2, &storage2[0], 8);
+    var line_ev: PsockEvent = psock_event_from_uip((2 as! byte).value, 3u16, 0u16);
+    try assert_eq_i32(psock_readto_from_event(&ps2, &line_ev, 10 as byte, &input2[0]) as i32, PT_ENDED);
+    try assert_eq_i32(storage2[0] as i32, 65);
+    try assert_eq_i32(storage2[1] as i32, 10);
+}
+
+test "psock_send_from_event close prevents pending ack advancement" {
+    var storage: [byte: 8] = [0: 8];
+    var payload: [byte: 5] = [1, 2, 3, 4, 5];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    var send_ev: PsockEvent = psock_event_from_uip(0 as byte, 0u16, 5u16);
+    _ = psock_send_from_event(&ps, &send_ev, &payload[0], 2u16);
+    var close_ack_ev: PsockEvent = psock_event_from_uip(((1 | 16) as! byte).value, 0u16, 5u16);
+    try assert_eq_i32(psock_send_from_event(&ps, &close_ack_ev, &payload[0], 2u16) as i32, PT_WAITING);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_CLOSE);
+    try assert_eq_i32(ps.sendlen as i32, 5);
+}
+
+test "psock_readbuf_from_event close with newdata does not consume payload" {
+    var storage: [byte: 4] = [0: 4];
+    var input: [byte: 4] = [10, 11, 12, 13];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 4);
+    var close_data_ev: PsockEvent = psock_event_from_uip(((2 | 16) as! byte).value, 4u16, 0u16);
+    try assert_eq_i32(psock_readbuf_from_event(&ps, &close_data_ev, &input[0]) as i32, PT_WAITING);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_CLOSE);
+    try assert_eq_i32(psock_datalen(&ps) as i32, 0);
+}
+
+test "psock_apply_event ack without data_sent does not falsely enter acked state" {
+    var storage: [byte: 4] = [0: 4];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 4);
+    var ack_ev: PsockEvent = psock_event_from_uip((1 as! byte).value, 0u16, 0u16);
+    psock_apply_event(&ps, &ack_ev);
+    try assert_eq_i32(ps.state as i32, 0);
 }

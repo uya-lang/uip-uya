@@ -105,6 +105,12 @@ export fn uip_ipv6_neighbor_ns_bridge(state: &UipNeighborState, ip: &UipIpv6Hdr,
     if !neighbor_icmp6_is_ns(hdr) {
         return (IPV6_ICMP6_DROP as! byte).value;
     }
+    if hdr.targetipaddr[6] != ip.destipaddr[6] || hdr.targetipaddr[7] != ip.destipaddr[7] {
+        return (IPV6_ICMP6_DROP as! byte).value;
+    }
+    if ip.srcipaddr[6] == 0u16 && ip.srcipaddr[7] == 0u16 {
+        return (IPV6_ICMP6_DROP as! byte).value;
+    }
     const src: UipIpAddr = ipv6_tail_to_ipaddr(&ip.srcipaddr[0]);
     uip_neighbor_add(state, &src, lladdr);
     return (IPV6_ICMP6_REPLY_READY as! byte).value;

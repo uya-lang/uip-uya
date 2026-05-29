@@ -122,6 +122,10 @@ fn fw_time_exceeded(rt: &UipRuntime) void {
     payload[3] = (icmp_cksum & 0xffu16) as! byte catch |_| { 0 as byte; };
     rt.frame.ethip.ipchksum = 0u16;
     rt.frame.ethip.ipchksum = fw_ipv4_header_checksum(&rt.frame.ethip);
+    if rt.stats != null {
+        rt.stats.ip.sent = rt.stats.ip.sent + 1u16;
+        rt.stats.icmp.sent = rt.stats.icmp.sent + 1u16;
+    }
     rt.te_reply = true;
 }
 
@@ -313,11 +317,13 @@ export fn uip_fw_forward(state: &UipFwState, rt: &UipRuntime) byte {
         }
         fw_time_exceeded(rt);
     }
-    rt.frame.ethip.ttl = rt.frame.ethip.ttl - (1 as byte);
-    if rt.frame.ethip.ipchksum >= htons(0xfeffu16) {
-        rt.frame.ethip.ipchksum = rt.frame.ethip.ipchksum + htons(0x0100u16) + 1u16;
-    } else {
-        rt.frame.ethip.ipchksum = rt.frame.ethip.ipchksum + htons(0x0100u16);
+    if !rt.te_reply {
+        rt.frame.ethip.ttl = rt.frame.ethip.ttl - (1 as byte);
+        if rt.frame.ethip.ipchksum >= htons(0xfeffu16) {
+            rt.frame.ethip.ipchksum = rt.frame.ethip.ipchksum + htons(0x0100u16) + 1u16;
+        } else {
+            rt.frame.ethip.ipchksum = rt.frame.ethip.ipchksum + htons(0x0100u16);
+        }
     }
     if !rt.te_reply {
         var slot: usize = 0;
@@ -398,7 +404,10 @@ export fn uip_split_output(rt: &UipRuntime, fw: &UipFwState, trace: &UipSplitTra
         trace.seq0[1] = rt.frame.ethtcp.seqno[1];
         trace.seq0[2] = rt.frame.ethtcp.seqno[2];
         trace.seq0[3] = rt.frame.ethtcp.seqno[3];
-        _ = uip_fw_output(fw, rt);
+        const first_result: byte = uip_fw_output(fw, rt);
+        if first_result != (UIP_FW_OK as! byte).value {
+            return first_result;
+        }
         const app: &byte = rt.appdata;
         if app != null {
             var move_i: u16 = 0u16;

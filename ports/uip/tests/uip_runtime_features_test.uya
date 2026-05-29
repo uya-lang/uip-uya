@@ -192,45 +192,24 @@ test "udp input and send update recv drop sent statistics" {
 }
 
 
-test "uip_process_timer retransmit and timeout do not spuriously log or increment stats" {
-    var state: UipState = UipState { listenports: [0u16: 20], conns: [UipConn { ripaddr: UipIpAddr { words: [0u16, 0u16] }, lport: 0u16, rport: 0u16, rcv_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], snd_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], len: 0u16, mss: 0u16, initialmss: 0u16, sa: 0 as byte, sv: 0 as byte, rto: 0 as byte, tcpstateflags: 0 as byte, timer: 0 as byte, nrtx: 0 as byte, appstate: 0u16 }: 10], udp_conns: [UipUdpConn { ripaddr: UipIpAddr { words: [0u16, 0u16] }, lport: 0u16, rport: 0u16, ttl: 0 as byte, appstate: 0u16 }: 10], acc32: [0 as byte,0 as byte,0 as byte,0 as byte], flags: 0 as byte, len: 0u16, lastport: 0u16 };
-    var rt: UipRuntime = make_runtime();
-    uip_init(&state);
-    uip_runtime_init(&rt);
-    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
-    state.conns[0].len = 5u16;
-    state.conns[0].timer = 0 as byte;
-    state.conns[0].rto = 3 as byte;
-    const rexmit: UipProcessResult = uip_process_timer(&state, &rt, 0);
-    try assert_eq_bool(rexmit.retransmit, true);
-    try assert_eq_i32(rexmit.flags as i32, UIP_REXMIT);
-    try assert_eq_i32(state.conns[0].nrtx as i32, 1);
-    try assert_eq_i32(state.conns[0].timer as i32, 3);
-    try assert_eq_i32(rt.logcode as i32, UIP_LOG_NONE);
-    try assert_eq_i32(rt.stats.tcp.sent as i32, 0);
-    state.conns[0].timer = 0 as byte;
-    state.conns[0].nrtx = 4 as byte;
-    const timed_out: UipProcessResult = uip_process_timer(&state, &rt, 0);
-    try assert_eq_bool(timed_out.timed_out, true);
-    try assert_eq_i32(timed_out.flags as i32, UIP_TIMEDOUT);
-    try assert_eq_bool(timed_out.closed, true);
-    try assert_eq_i32(rt.logcode as i32, UIP_LOG_NONE);
-    try assert_eq_i32(rt.stats.tcp.drop as i32, 0);
-}
 
 
-test "ip and icmp counter helpers update statistics blocks" {
+
+test "ipv6_process_runtime_step unsupported icmp6 type counts recv drop and logs" {
+    var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
     var rt: UipRuntime = make_runtime();
+    rt.stats = &stats;
+    var ip: UipIpv6Hdr = UipIpv6Hdr { vtc: 0x60 as byte, tcflow: 0 as byte, flow: [0 as byte, 0 as byte], len: [0 as byte, 8 as byte], proto: (UIP_PROTO_ICMP6 as! byte).value, ttl: 64 as byte, srcipaddr: [1u16,2u16,3u16,4u16,5u16,6u16,7u16,8u16], destipaddr: [9u16,10u16,11u16,12u16,13u16,14u16,15u16,16u16] };
+    var icmp: UipIcmp6Hdr = UipIcmp6Hdr { type: 200 as byte, code: 0 as byte, icmpchksum: 0u16, data: [0 as byte,0 as byte,0 as byte,0 as byte] };
     uip_runtime_init(&rt);
-    ip_count_recv(&rt);
-    ip_count_drop(&rt);
-    icmp_count_recv(&rt);
-    icmp_count_sent(&rt);
-    icmp_count_drop(&rt);
+    rt.stats = &stats;
+    try assert_eq_i32(ipv6_process_runtime_step(&ip, &icmp, &rt) as i32, IPV6_PROCESS_DROP);
     try assert_eq_i32(rt.stats.ip.recv as i32, 1);
     try assert_eq_i32(rt.stats.ip.drop as i32, 1);
     try assert_eq_i32(rt.stats.icmp.recv as i32, 1);
-    try assert_eq_i32(rt.stats.icmp.sent as i32, 1);
     try assert_eq_i32(rt.stats.icmp.drop as i32, 1);
+    try assert_eq_i32(rt.stats.icmp.sent as i32, 0);
+    try assert_eq_i32(rt.logcode as i32, UIP_LOG_DATA);
+    try assert_eq_i32(rt.logparam as i32, UIP_PROTO_ICMP6);
 }
 

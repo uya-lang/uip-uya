@@ -32,7 +32,7 @@ struct EthTcpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid
 struct EthUdpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, udplen: u16, udpchksum: u16 }
 struct ArpHdr { ethhdr: UipEthHdr, hwtype: u16, protocol: u16, hwlen: byte, protolen: byte, opcode: u16, shwaddr: UipEthAddr, sipaddr: [u16: 2], dhwaddr: UipEthAddr, dipaddr: [u16: 2] }
 struct UipFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
-struct UipRuntime { frame: UipFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, len: u16, slen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, acc32: [byte: 4], ipid: u16, iss: [byte: 4], te_reply: bool, stats: &UipStats }
+struct UipRuntime { frame: UipFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, urgdata: &byte, len: u16, slen: u16, urglen: u16, surglen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, acc32: [byte: 4], ipid: u16, iss: [byte: 4], logcode: byte, logparam: u16, stats: &UipStats, te_reply: bool }
 struct UipFwNetif { ipaddr: UipIpAddr, netmask: UipIpAddr, output_result: byte, output_calls: byte }
 struct UipFwCacheEntry { timer: u16, srcipaddr: UipIpAddr, destipaddr: UipIpAddr, ipid: u16, proto: byte }
 struct UipFwState { netifs: [&UipFwNetif: 4], netif_count: usize, default_index: i32, cache: [UipFwCacheEntry: 2] }
@@ -50,16 +50,21 @@ fn make_runtime() UipRuntime {
         netmask: UipIpAddr { words: [0u16, 0u16] },
         appdata: null,
         sappdata: null,
+        urgdata: null,
         len: 0u16,
         slen: 0u16,
+        urglen: 0u16,
+        surglen: 0u16,
         flags: 0 as byte,
         current_conn: -1,
         current_udp_conn: -1,
         acc32: [0 as byte,0 as byte,0 as byte,0 as byte],
         ipid: 0u16,
         iss: [0 as byte,0 as byte,0 as byte,0 as byte],
-        te_reply: false,
-        stats: &UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } }
+        logcode: 0 as byte,
+        logparam: 0u16,
+        stats: &UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } },
+        te_reply: false
     };
 }
 
@@ -192,12 +197,14 @@ test "uip_fw_forward broadcast returns local after forwarding" {
 }
 
 
-test "uip_fw_forward ttl expiry does not register original packet in duplicate cache" {
+test "uip_fw_forward ttl expiry prepares icmp time exceeded packet details" {
     var state: UipFwState = make_fw_state();
     var netif: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value, output_calls: 0 as byte };
     uip_fw_register(&state, &netif);
     uip_fw_default(&state, &netif);
     var rt: UipRuntime = make_runtime();
+    var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
+    rt.stats = &stats;
     rt.hostaddr = uip_ipaddr(192,168,0,2);
     rt.len = 60u16;
     const src: UipIpAddr = uip_ipaddr(1,1,1,1);
@@ -210,10 +217,16 @@ test "uip_fw_forward ttl expiry does not register original packet in duplicate c
     rt.frame.ethip.ipid[1] = 11 as byte;
     rt.frame.ethip.proto = 6 as byte;
     rt.frame.ethip.ttl = 1 as byte;
+    rt.frame.ethip.len[0] = 0 as byte;
+    rt.frame.ethip.len[1] = 60 as byte;
     try assert_eq_i32(uip_fw_forward(&state, &rt) as i32, UIP_FW_FORWARDED);
     try assert_eq_bool(rt.te_reply, true);
-    try assert_eq_i32(state.cache[0].timer as i32, 0);
-    try assert_eq_i32(state.cache[1].timer as i32, 0);
+    try assert_eq_i32(rt.frame.ethip.proto as i32, UIP_PROTO_ICMP);
+    try assert_eq_i32(rt.frame.ethip.ttl as i32, UIP_TTL);
+    try assert_eq_i32(rt.frame.ethip.len[0] as i32, 0);
+    try assert_eq_i32(rt.frame.ethip.len[1] as i32, 56);
+    try assert_eq_i32(rt.stats.icmp.sent as i32, 1);
     try assert_eq_i32(netif.output_calls as i32, 1);
 }
+
 

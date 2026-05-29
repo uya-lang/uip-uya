@@ -42,8 +42,11 @@ export fn ipv6_process_step(ip: &UipIpv6Hdr, icmp: &UipIcmp6Hdr) byte {
     const kind: byte = ipv6_input_classify(ip);
     if kind == (IPV6_INPUT_ICMP6 as! byte).value {
         const result: byte = ipv6_input_step(ip, icmp);
-        if result == (IPV6_ICMP6_REPLY_READY as! byte).value || result == (IPV6_ICMP6_UNHANDLED as! byte).value || result == (IPV6_ICMP6_DROP as! byte).value {
+        if result == (IPV6_ICMP6_REPLY_READY as! byte).value || result == (IPV6_ICMP6_UNHANDLED as! byte).value {
             return (IPV6_PROCESS_ICMP6 as! byte).value;
+        }
+        if result == (IPV6_ICMP6_DROP as! byte).value {
+            return (IPV6_PROCESS_DROP as! byte).value;
         }
         return (IPV6_PROCESS_DROP as! byte).value;
     }
@@ -126,6 +129,9 @@ export fn icmp6_na_prepare_from_ns(ip: &UipIpv6Hdr, hdr: &UipIcmp6NeighborHdr) b
     hdr.type = (ICMP6_NA as! byte).value;
     hdr.code = 0 as byte;
     hdr.flags[0] = 0x60 as byte;
+    hdr.flags[1] = 0 as byte;
+    hdr.flags[2] = 0 as byte;
+    hdr.flags[3] = 0 as byte;
     hdr.icmpchksum = 0u16;
     var i: usize = 0usize;
     while i < 8usize {
@@ -151,11 +157,17 @@ export fn ipv6_icmp6_echo_input_step(ip: &UipIpv6Hdr, icmp: &UipIcmp6Hdr) byte {
 }
 
 export fn ipv6_icmp6_neighbor_input_step(ip: &UipIpv6Hdr, hdr: &UipIcmp6NeighborHdr) byte {
+    if hdr.code != 0 as byte || ip.ttl != 255 as byte {
+        return (IPV6_ICMP6_DROP as! byte).value;
+    }
     if hdr.type == (ICMP6_NS as! byte).value {
         _ = icmp6_na_prepare_from_ns(ip, hdr);
         return (IPV6_ICMP6_REPLY_READY as! byte).value;
     }
     if hdr.type == (ICMP6_NA as! byte).value {
+        if ip.srcipaddr[0] == 0u16 && ip.srcipaddr[1] == 0u16 && ip.srcipaddr[2] == 0u16 && ip.srcipaddr[3] == 0u16 && ip.srcipaddr[4] == 0u16 && ip.srcipaddr[5] == 0u16 && ip.srcipaddr[6] == 0u16 && ip.srcipaddr[7] == 0u16 {
+            return (IPV6_ICMP6_DROP as! byte).value;
+        }
         return (IPV6_ICMP6_UNHANDLED as! byte).value;
     }
     return (IPV6_ICMP6_DROP as! byte).value;
@@ -1326,13 +1338,47 @@ export fn ipv6_input_neighbor_bridge(ip: &UipIpv6Hdr, hdr: &UipIcmp6NeighborHdr,
 
 export fn ipv6_process_runtime_step(ip: &UipIpv6Hdr, icmp: &UipIcmp6Hdr, rt: &UipRuntime) byte {
     ip_count_recv(rt);
+    const was_echo_request: bool = icmp6_is_echo_request(icmp);
+    const was_ns: bool = icmp6_is_ns(icmp);
+    const was_invalid_nd: bool = icmp6_is_neighbor_message(icmp) && (icmp.code != 0 as byte || ip.ttl != 255 as byte);
     const result: byte = ipv6_process_step(ip, icmp);
     if result == (IPV6_PROCESS_ICMP6 as! byte).value {
         icmp_count_recv(rt);
-        if icmp6_is_echo_request(icmp) || icmp6_is_ns(icmp) {
+        if was_echo_request || was_ns {
             icmp_count_sent(rt);
             uip_runtime_log(rt, (UIP_LOG_DATA as! byte).value, ip.proto as u16);
+            if was_invalid_nd {
+                icmp_count_drop(rt);
+                ip_count_drop(rt);
+                return (IPV6_PROCESS_DROP as! byte).value;
+            }
+            return result;
         }
+        if was_invalid_nd {
+            icmp_count_drop(rt);
+            ip_count_drop(rt);
+            uip_runtime_log(rt, (UIP_LOG_DATA as! byte).value, ip.proto as u16);
+            return (IPV6_PROCESS_DROP as! byte).value;
+        }
+        if !(icmp6_is_na(icmp) || icmp6_is_echo_reply(icmp)) {
+            icmp_count_drop(rt);
+            ip_count_drop(rt);
+            uip_runtime_log(rt, (UIP_LOG_DATA as! byte).value, ip.proto as u16);
+            return (IPV6_PROCESS_DROP as! byte).value;
+        }
+        uip_runtime_log(rt, (UIP_LOG_DATA as! byte).value, ip.proto as u16);
+        return result;
+    }
+    if ip.proto == (UIP_PROTO_ICMP6 as! byte).value {
+        icmp_count_recv(rt);
+        if icmp6_is_echo_request(icmp) {
+            icmp_count_sent(rt);
+            uip_runtime_log(rt, (UIP_LOG_DATA as! byte).value, ip.proto as u16);
+            return result;
+        }
+        icmp_count_drop(rt);
+        uip_runtime_log(rt, (UIP_LOG_DATA as! byte).value, ip.proto as u16);
+        ip_count_drop(rt);
         return result;
     }
     if result == (IPV6_PROCESS_TCP as! byte).value || result == (IPV6_PROCESS_UDP as! byte).value {
@@ -1348,6 +1394,7 @@ export fn ip_count_drop(rt: &UipRuntime) void { if rt.stats != null { rt.stats.i
 export fn icmp_count_recv(rt: &UipRuntime) void { if rt.stats != null { rt.stats.icmp.recv = rt.stats.icmp.recv + 1u16; } }
 export fn icmp_count_sent(rt: &UipRuntime) void { if rt.stats != null { rt.stats.icmp.sent = rt.stats.icmp.sent + 1u16; } }
 export fn icmp_count_drop(rt: &UipRuntime) void { if rt.stats != null { rt.stats.icmp.drop = rt.stats.icmp.drop + 1u16; } }
+export fn hdr_invalid_for_runtime(icmp: &UipIcmp6Hdr) bool { return icmp.code != 0 as byte && icmp6_is_neighbor_message(icmp); }
 export fn udp_input_checksum_error_step(rt: &UipRuntime) UipProcessResult {
     rt.len = 0u16;
     if rt.stats != null {
@@ -1451,7 +1498,17 @@ export fn uip_reass_step(state: &UipReassState, frame: &EthIpHdr, payload: &byte
     }
     var i: u16 = 0u16;
     while i < copy_len {
-        state.buf[(20u16 + offset + i) as usize] = payload[i as usize];
+        const pos: u16 = offset + i;
+        const frag_bit: u16 = pos / 8u16;
+        const byte_index: usize = (frag_bit / 8u16) as usize;
+        const bit_index: usize = (frag_bit & 7u16) as usize;
+        var already_present: bool = false;
+        if byte_index < 6usize {
+            already_present = (state.bitmap[byte_index] & ((1u16 << bit_index) as! byte catch |_| { 0 as byte; })) != 0 as byte;
+        }
+        if !already_present {
+            state.buf[(20u16 + pos) as usize] = payload[i as usize];
+        }
         i = i + 1u16;
     }
     var bit_off: u16 = offset / 8u16;
@@ -1499,8 +1556,9 @@ export fn uip_reass_step(state: &UipReassState, frame: &EthIpHdr, payload: &byte
     out.srcipaddr[1] = src_hdr.srcipaddr[1];
     out.destipaddr[0] = src_hdr.destipaddr[0];
     out.destipaddr[1] = src_hdr.destipaddr[1];
-    out.len[0] = ((state.len >> 8) & 0xffu16) as! byte catch |_| { 0 as byte; };
-    out.len[1] = (state.len & 0xffu16) as! byte catch |_| { 0 as byte; };
+    const packet_len: u16 = state.len + ihl_bytes;
+    out.len[0] = ((packet_len >> 8) & 0xffu16) as! byte catch |_| { 0 as byte; };
+    out.len[1] = (packet_len & 0xffu16) as! byte catch |_| { 0 as byte; };
     const hdr_ptr: &byte = @ptr_from_usize(@usize_from_ptr(out as &void)) as &byte;
     out.ipchksum = 0u16;
     out.ipchksum = uip_ipchksum(@ptr_from_usize(@usize_from_ptr(hdr_ptr as &void) - 14usize) as &byte);
@@ -1600,6 +1658,7 @@ export fn uip_process_tcp_core(state: &UipState, rt: &UipRuntime, conn_index: i3
         if incoming_len > 0u16 || ctl != 0 as byte {
             _ = tcp_build_ack(state, rt, conn_index, &rt.frame.ethtcp);
             if rt.stats != null {
+                rt.stats.tcp.drop = rt.stats.tcp.drop + 1u16;
                 rt.stats.tcp.sent = rt.stats.tcp.sent + 1u16;
             }
             return UipProcessResult { flags: 0 as byte, len: 1u16, poll: false, timed_out: false, retransmit: false, appcall: false, closed: false, logged: rt.logcode != (UIP_LOG_NONE as! byte).value, urgdata: has_urg };
@@ -1627,6 +1686,7 @@ export fn uip_process_tcp_core(state: &UipState, rt: &UipRuntime, conn_index: i3
             if rt.stats != null {
                 rt.stats.tcp.sent = rt.stats.tcp.sent + 1u16;
             }
+            fin_result.appcall = true;
             fin_result.logged = rt.logcode != (UIP_LOG_NONE as! byte).value;
             fin_result.urgdata = has_urg;
             return fin_result;

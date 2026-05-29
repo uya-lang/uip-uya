@@ -170,19 +170,88 @@ test "uip_reass_step reassembles four fragments across bitmap bytes" {
     try assert_eq_i32(uip_reass_step(&state, &frag3, &p3[0], 8u16, &out) as i32, 0);
     try assert_eq_i32(uip_reass_step(&state, &frag1, &p1[0], 64u16, &out) as i32, 200);
     try assert_eq_i32(out.len[0] as i32, 0);
-    try assert_eq_i32(out.len[1] as i32, 200);
+    try assert_eq_i32(out.len[1] as i32, 220);
 }
 
-test "uip_reass_step accepts near buffer limit datagram" {
+test "uip_reass_step duplicate fragment does not corrupt previously buffered payload" {
     var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte, srcipaddr: [0u16, 0u16], destipaddr: [0u16, 0u16], ipid: [0 as byte, 0 as byte], proto: 0 as byte };
     var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
-    var frag0: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 340u16);
-    var frag1: EthIpHdr = make_hdr(0 as byte, 40 as byte, 66u16);
-    var p0: [byte: 320] = [7 as byte: 320];
-    var p1: [byte: 46] = [9 as byte: 46];
-    try assert_eq_i32(uip_reass_step(&state, &frag0, &p0[0], 320u16, &out) as i32, 0);
-    try assert_eq_i32(uip_reass_step(&state, &frag1, &p1[0], 46u16, &out) as i32, 366);
-    try assert_eq_i32(out.len[0] as i32, 1);
-    try assert_eq_i32(out.len[1] as i32, 110);
+    var frag0: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
+    var frag1: EthIpHdr = make_hdr(0 as byte, 1 as byte, 24u16);
+    var p0: [byte: 8] = [1,2,3,4,5,6,7,8];
+    var p1: [byte: 4] = [9,10,11,12];
+    var dup: [byte: 8] = [101,102,103,104,105,106,107,108];
+    _ = uip_reass_step(&state, &frag0, &p0[0], 8u16, &out);
+    try assert_eq_i32(state.buf[20] as i32, 1);
+    _ = uip_reass_step(&state, &frag0, &dup[0], 8u16, &out);
+    try assert_eq_i32(state.buf[20] as i32, 1);
+    try assert_eq_i32(uip_reass_step(&state, &frag1, &p1[0], 4u16, &out) as i32, 12);
+}
+
+test "uip_reass_step overlapping fragment does not overwrite earlier bytes" {
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte, srcipaddr: [0u16, 0u16], destipaddr: [0u16, 0u16], ipid: [0 as byte, 0 as byte], proto: 0 as byte };
+    var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
+    var frag0: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
+    var overlap: EthIpHdr = make_hdr(0 as byte, 0 as byte, 24u16);
+    overlap.ipoffset[1] = 0 as byte;
+    var p0: [byte: 8] = [1,2,3,4,5,6,7,8];
+    var p1: [byte: 4] = [9,10,11,12];
+    _ = uip_reass_step(&state, &frag0, &p0[0], 8u16, &out);
+    _ = uip_reass_step(&state, &overlap, &p1[0], 4u16, &out);
+    try assert_eq_i32(state.buf[20] as i32, 1);
+    try assert_eq_i32(state.buf[21] as i32, 2);
+    try assert_eq_i32(state.buf[22] as i32, 3);
+    try assert_eq_i32(state.buf[23] as i32, 4);
+}
+
+test "uip_reass_step switches datagram identity on src change" {
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte, srcipaddr: [0u16, 0u16], destipaddr: [0u16, 0u16], ipid: [0 as byte, 0 as byte], proto: 0 as byte };
+    var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
+    var frag0: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
+    var frag_new: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
+    frag_new.srcipaddr[1] = htons(0x0003u16);
+    var p0: [byte: 8] = [1,2,3,4,5,6,7,8];
+    var p1: [byte: 8] = [9,10,11,12,13,14,15,16];
+    _ = uip_reass_step(&state, &frag0, &p0[0], 8u16, &out);
+    try assert_eq_i32(state.buf[20] as i32, 1);
+    _ = uip_reass_step(&state, &frag_new, &p1[0], 8u16, &out);
+    try assert_eq_i32(state.buf[20] as i32, 9);
+    try assert_eq_i32(state.srcipaddr[1] as i32, htons(0x0003u16) as i32);
+}
+
+test "uip_reass_step switches datagram identity on proto change" {
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte, srcipaddr: [0u16, 0u16], destipaddr: [0u16, 0u16], ipid: [0 as byte, 0 as byte], proto: 0 as byte };
+    var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
+    var frag0: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
+    var frag_new: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
+    frag_new.proto = 17 as byte;
+    var p0: [byte: 8] = [1,2,3,4,5,6,7,8];
+    var p1: [byte: 8] = [9,10,11,12,13,14,15,16];
+    _ = uip_reass_step(&state, &frag0, &p0[0], 8u16, &out);
+    _ = uip_reass_step(&state, &frag_new, &p1[0], 8u16, &out);
+    try assert_eq_i32(state.buf[20] as i32, 9);
+    try assert_eq_i32(state.proto as i32, 17);
+}
+
+test "uip_reass_step preserves reassembled payload bytes in order" {
+    var state: UipReassState = UipReassState { buf: [0 as byte: 386], bitmap: [0 as byte: 6], len: 0u16, flags: 0 as byte, timer: 0 as byte, srcipaddr: [0u16, 0u16], destipaddr: [0u16, 0u16], ipid: [0 as byte, 0 as byte], proto: 0 as byte };
+    var out: EthIpHdr = make_hdr(0 as byte, 0 as byte, 0u16);
+    var frag2: EthIpHdr = make_hdr((IP_MF as! byte).value, 2 as byte, 28u16);
+    var frag0: EthIpHdr = make_hdr((IP_MF as! byte).value, 0 as byte, 28u16);
+    var frag1: EthIpHdr = make_hdr(0 as byte, 1 as byte, 28u16);
+    var p2: [byte: 8] = [17,18,19,20,21,22,23,24];
+    var p0: [byte: 8] = [1,2,3,4,5,6,7,8];
+    var p1: [byte: 8] = [9,10,11,12,13,14,15,16];
+    _ = uip_reass_step(&state, &frag2, &p2[0], 8u16, &out);
+    _ = uip_reass_step(&state, &frag0, &p0[0], 8u16, &out);
+    try assert_eq_i32(uip_reass_step(&state, &frag1, &p1[0], 8u16, &out) as i32, 16);
+    try assert_eq_i32(out.len[0] as i32, 0);
+    try assert_eq_i32(out.len[1] as i32, 36);
+    try assert_eq_i32(state.buf[20] as i32, 1);
+    try assert_eq_i32(state.buf[27] as i32, 8);
+    try assert_eq_i32(state.buf[28] as i32, 9);
+    try assert_eq_i32(state.buf[35] as i32, 16);
+    try assert_eq_i32(state.buf[36] as i32, 17);
+    try assert_eq_i32(state.buf[43] as i32, 24);
 }
 
