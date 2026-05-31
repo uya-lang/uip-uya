@@ -11,7 +11,7 @@ extern fn ipv6_input_neighbor_bridge(ip: &UipIpv6Hdr, hdr: &UipIcmp6NeighborHdr,
 
 export fn uip_ipv6_neighbor_glue_step(state: &UipNeighborState, ip: &UipIpv6Hdr, hdr: &UipIcmp6NeighborHdr, lladdr: &UipNeighborAddr) byte {
     if hdr.type != 135 as byte {
-        return ipv6_input_neighbor_bridge(ip, hdr, 2 as byte);
+        return ipv6_input_neighbor_bridge(ip, hdr, 3 as byte);
     }
     const bridge_result: byte = uip_ipv6_neighbor_ns_bridge(state, ip, hdr, lladdr);
     return ipv6_input_neighbor_bridge(ip, hdr, bridge_result);

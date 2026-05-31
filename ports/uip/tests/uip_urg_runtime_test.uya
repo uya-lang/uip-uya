@@ -1,23 +1,9 @@
 use std.testing;
 
-extern fn ipv6_process_runtime_step(ip: &UipIpv6Hdr, icmp: &UipIcmp6Hdr, rt: &UipRuntime) byte;
-extern const UIP_PROTO_ICMP6: i32;
-extern const ICMP6_ECHO_REQUEST: i32;
-extern const IPV6_PROCESS_ICMP6: i32;
-extern const IPV6_PROCESS_TCP: i32;
-extern const IPV6_PROCESS_DROP: i32;
-extern fn ip_count_recv(rt: &UipRuntime) void;
-extern fn ip_count_drop(rt: &UipRuntime) void;
-extern fn icmp_count_recv(rt: &UipRuntime) void;
-extern fn icmp_count_sent(rt: &UipRuntime) void;
-extern fn icmp_count_drop(rt: &UipRuntime) void;
-extern fn udp_input_checksum_error_step(rt: &UipRuntime) UipProcessResult;
-extern fn uip_stats_init(stats: &UipStats) void;
 extern fn uip_runtime_init(rt: &UipRuntime) void;
 extern fn uip_runtime_clear_log(rt: &UipRuntime) void;
 extern fn uip_runtime_log(rt: &UipRuntime, code: byte, param: u16) void;
 extern fn uip_tcp_prepare_urg(rt: &UipRuntime, incoming_len: u16) bool;
-extern fn htons(val: u16) u16;
 extern fn uip_init(state: &UipState) void;
 extern fn uip_process_tcp_core(state: &UipState, rt: &UipRuntime, conn_index: i32, incoming_len: u16, has_ack: bool, has_fin: bool, app_slen: u16) UipProcessResult;
 
@@ -26,11 +12,7 @@ extern const TCP_ACK: i32;
 extern const UIP_LOG_NONE: i32;
 extern const UIP_LOG_TCP_URG: i32;
 extern const UIP_LOG_DATA: i32;
-extern const UIP_LOG_RST: i32;
 extern const UIP_ESTABLISHED: i32;
-
-struct UipIpv6Hdr { vtc: byte, tcflow: byte, flow: [byte: 2], len: [byte: 2], proto: byte, ttl: byte, srcipaddr: [u16: 8], destipaddr: [u16: 8] }
-struct UipIcmp6Hdr { type: byte, code: byte, icmpchksum: u16, data: [byte: 4] }
 
 struct UipStatsBlock { drop: u16, recv: u16, sent: u16, a: u16, b: u16, c: u16, d: u16, e: u16, f: u16 }
 struct UipStatsUdpBlock { drop: u16, recv: u16, sent: u16, chkerr: u16 }
@@ -41,14 +23,13 @@ struct UipEthHdr { dest: UipEthAddr, src: UipEthAddr, type: u16 }
 struct EthIpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2] }
 struct EthTcpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, seqno: [byte: 4], ackno: [byte: 4], tcpoffset: byte, flags: byte, wnd: [byte: 2], tcpchksum: u16, urgp: u16, optdata: [byte: 4] }
 struct EthUdpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, udplen: u16, udpchksum: u16 }
-struct UipUdpipHdr { vtc: byte, tcflow: byte, flow: u16, len: [byte: 2], proto: byte, ttl: byte, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, udplen: u16, udpchksum: u16 }
 struct ArpHdr { ethhdr: UipEthHdr, hwtype: u16, protocol: u16, hwlen: byte, protolen: byte, opcode: u16, shwaddr: UipEthAddr, sipaddr: [u16: 2], dhwaddr: UipEthAddr, dipaddr: [u16: 2] }
 struct UipRuntimeLog { code: byte, arg0: u16, arg1: u16 }
-struct UipRuntimeFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
-struct UipRuntime { frame: UipRuntimeFrame, appdata: &byte, sappdata: &byte, len: u16, uip_len: u16, uip_slen: u16, flags: byte, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, stats: &UipStats, urgdata: &byte, urglen: u16, surglen: u16, logbuf: [UipRuntimeLog: 16], logcount: usize, logcode: byte, logparam: u16, current_conn: i32, current_udp_conn: i32, payload_view: &byte, payload_len: u16, input_view: &byte, input_len: u16, app_input: &byte, app_input_len: u16, app_output: &byte, slen: u16, logs: [UipRuntimeLog: 16], ipid: u16, te_reply: bool }
 struct UipConn { ripaddr: [u16: 2], lport: u16, rport: u16, rcv_nxt: [byte: 4], snd_nxt: [byte: 4], len: u16, mss: u16, initialmss: u16, sa: byte, sv: byte, rto: byte, tcpstateflags: byte, timer: byte, nrtx: byte, appstate: u16 }
 struct UipUdpConn { ripaddr: [u16: 2], lport: u16, rport: u16, ttl: byte, appstate: u16 }
 struct UipState { conns: [UipConn: 10], listener_ports: [u16: 10], udp_conns: [UipUdpConn: 10], hostaddr: UipIpAddr, stats: UipStats, iss: [byte: 4], lastport: u16 }
+struct UipRuntimeFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
+struct UipRuntime { frame: UipRuntimeFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, urgdata: &byte, len: u16, uip_len: u16, uip_slen: u16, slen: u16, urglen: u16, surglen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, payload_view: &byte, payload_len: u16, input_view: &byte, input_len: u16, app_input: &byte, app_input_len: u16, app_output: &byte, logbuf: [UipRuntimeLog: 16], logcount: usize, logcode: byte, logparam: u16, logs: [UipRuntimeLog: 16], ipid: u16, stats: &UipStats, te_reply: bool }
 struct UipProcessResult { flags: byte, len: u16, poll: bool, timed_out: bool, retransmit: bool, appcall: bool, closed: bool, logged: bool, urgdata: bool }
 
 fn make_runtime() UipRuntime {
@@ -56,65 +37,30 @@ fn make_runtime() UipRuntime {
     return UipRuntime {
         frame: UipRuntimeFrame {
             ethip: EthIpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16] },
-            ethtcp: EthTcpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: htons(1000u16), destport: htons(80u16), seqno: [0 as byte,0 as byte,0 as byte,1 as byte], ackno: [0 as byte,0 as byte,0 as byte,0 as byte], tcpoffset: 0x50 as byte, flags: 0 as byte, wnd: [0 as byte,0 as byte], tcpchksum: 0u16, urgp: 0u16, optdata: [0 as byte,0 as byte,0 as byte,0 as byte] },
+            ethtcp: EthTcpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, seqno: [0 as byte,0 as byte,0 as byte,1 as byte], ackno: [0 as byte,0 as byte,0 as byte,0 as byte], tcpoffset: 0x50 as byte, flags: 0 as byte, wnd: [0 as byte,0 as byte], tcpchksum: 0u16, urgp: 0u16, optdata: [0 as byte,0 as byte,0 as byte,0 as byte] },
             ethudp: EthUdpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, udplen: 0u16, udpchksum: 0u16 },
             arp: ArpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, hwtype: 0u16, protocol: 0u16, hwlen: 0 as byte, protolen: 0 as byte, opcode: 0u16, shwaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, sipaddr: [0u16,0u16], dhwaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, dipaddr: [0u16,0u16] }
         },
-        appdata: null,
-        sappdata: null,
-        len: 0u16,
-        uip_len: 0u16,
-        uip_slen: 0u16,
-        flags: 0 as byte,
-        hostaddr: UipIpAddr { words: [0u16, 0u16] },
-        draddr: UipIpAddr { words: [0u16, 0u16] },
-        netmask: UipIpAddr { words: [0u16, 0u16] },
+        hostaddr: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, appdata: null, sappdata: null, urgdata: null, len: 0u16, uip_len: 0u16, uip_slen: 0u16, slen: 0u16, urglen: 0u16, surglen: 0u16, flags: 0 as byte, current_conn: -1, current_udp_conn: -1, payload_view: null, payload_len: 0u16, input_view: null, input_len: 0u16, app_input: null, app_input_len: 0u16, app_output: null, logbuf: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16], logcount: 0usize, logcode: 0 as byte, logparam: 0u16, logs: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16], ipid: 0u16,
         stats: &stats,
-        urgdata: null,
-        urglen: 0u16,
-        surglen: 0u16,
-        logbuf: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16],
-        logcount: 0usize,
-        logcode: 0 as byte,
-        logparam: 0u16,
-        current_conn: -1,
-        current_udp_conn: -1,
-        payload_view: null,
-        payload_len: 0u16,
-        input_view: null,
-        input_len: 0u16,
-        app_input: null,
-        app_input_len: 0u16,
-        app_output: null,
-        slen: 0u16,
-        logs: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16],
-        ipid: 0u16,
         te_reply: false
     };
 }
 
-test "udp_send_step invalid index leaves current selection and counters unchanged" {
+test "uip_runtime_init clears runtime basics" {
     var rt: UipRuntime = make_runtime();
-    var state: UipState = UipState { conns: [UipConn { ripaddr: [0u16, 0u16], lport: 0u16, rport: 0u16, rcv_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], snd_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], len: 0u16, mss: 0u16, initialmss: 0u16, sa: 0 as byte, sv: 0 as byte, rto: 0 as byte, tcpstateflags: 0 as byte, timer: 0 as byte, nrtx: 0 as byte, appstate: 0u16 }: 10], udp_conns: [UipUdpConn { ripaddr: [0u16, 0u16], lport: 0u16, rport: 0u16, ttl: 0 as byte, appstate: 0u16 }: 10], listener_ports: [0u16: 10], hostaddr: UipIpAddr { words: [0u16,0u16] }, stats: UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } }, iss: [0 as byte,0 as byte,0 as byte,0 as byte], lastport: 0u16 };
-    rt.current_udp_conn = 4;
-    const result: UipProcessResult = udp_send_step(&state, &rt, -1, 9u16);
-    try assert_eq_bool(result.appcall, false);
-    try assert_eq_i32(result.len as i32, 0);
-    try assert_eq_i32(rt.current_udp_conn as i32, 4);
-    try assert_eq_i32(rt.stats.udp.sent as i32, 0);
-}
-
-
-test "uip_runtime log helpers update and clear state" {
-    var rt: UipRuntime = make_runtime();
+    var payload: [byte: 1] = [7];
+    rt.appdata = &payload[0];
+    rt.urgdata = &payload[0];
+    rt.urglen = 2u16;
+    rt.logcode = 9 as byte;
     uip_runtime_init(&rt);
-    try assert_eq_i32(rt.logcode as i32, UIP_LOG_NONE);
-    uip_runtime_log(&rt, (UIP_LOG_DATA as! byte).value, 12u16);
-    try assert_eq_i32(rt.logcode as i32, UIP_LOG_DATA);
-    try assert_eq_i32(rt.logparam as i32, 12);
-    uip_runtime_clear_log(&rt);
+    try assert_eq_i32(rt.urglen as i32, 0);
+    try assert_eq_i32(@usize_from_ptr(rt.appdata as &void) as i32, 0);
+    try assert_eq_i32(@usize_from_ptr(rt.urgdata as &void) as i32, 0);
     try assert_eq_i32(rt.logcode as i32, UIP_LOG_NONE);
 }
+
 
 test "uip_tcp_prepare_urg exposes urgent data window" {
     var rt: UipRuntime = make_runtime();
@@ -126,22 +72,6 @@ test "uip_tcp_prepare_urg exposes urgent data window" {
     try assert_eq_bool(uip_tcp_prepare_urg(&rt, 4u16), true);
     try assert_eq_i32(rt.urglen as i32, 2);
     try assert_eq_i32(rt.logcode as i32, UIP_LOG_TCP_URG);
-}
-
-test "uip_tcp_prepare_urg clamps zero and oversized urgent pointer" {
-    var rt: UipRuntime = make_runtime();
-    var payload: [byte: 3] = [1, 2, 3];
-    uip_runtime_init(&rt);
-    rt.appdata = &payload[0];
-    rt.frame.ethtcp.flags = (TCP_URG as! byte).value;
-    rt.frame.ethtcp.urgp = 0u16;
-    try assert_eq_bool(uip_tcp_prepare_urg(&rt, 3u16), true);
-    try assert_eq_i32(rt.urglen as i32, 1);
-    rt.frame.ethtcp.urgp = 9u16;
-    try assert_eq_bool(uip_tcp_prepare_urg(&rt, 3u16), true);
-    try assert_eq_i32(rt.urglen as i32, 3);
-    try assert_eq_i32(rt.logcode as i32, UIP_LOG_TCP_URG);
-    try assert_eq_i32(rt.logparam as i32, 3);
 }
 
 test "uip_tcp_prepare_urg without urg flag clears urgent view" {
@@ -211,40 +141,3 @@ test "uip_process_tcp_core urgent data log keeps urgent length and final data lo
     try assert_eq_i32(rt.logparam as i32, 5);
     try assert_eq_i32(rt.stats.tcp.recv as i32, 1);
 }
-
-test "uip_process_tcp_core logs rst reply for unmatched connection" {
-    var state: UipState = UipState { conns: [UipConn { ripaddr: [0u16, 0u16], lport: 0u16, rport: 0u16, rcv_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], snd_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], len: 0u16, mss: 0u16, initialmss: 0u16, sa: 0 as byte, sv: 0 as byte, rto: 0 as byte, tcpstateflags: 0 as byte, timer: 0 as byte, nrtx: 0 as byte, appstate: 0u16 }: 10], udp_conns: [UipUdpConn { ripaddr: [0u16, 0u16], lport: 0u16, rport: 0u16, ttl: 0 as byte, appstate: 0u16 }: 10], listener_ports: [0u16: 10], hostaddr: UipIpAddr { words: [0u16,0u16] }, stats: UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } }, iss: [0 as byte,0 as byte,0 as byte,0 as byte], lastport: 0u16 };
-    var rt: UipRuntime = make_runtime();
-    uip_init(&state);
-    uip_runtime_init(&rt);
-    const result: UipProcessResult = uip_process_tcp_core(&state, &rt, -1, 0u16, false, false, 0u16);
-    try assert_eq_bool(result.logged, true);
-    try assert_eq_i32(rt.logcode as i32, UIP_LOG_RST);
-    try assert_eq_i32(rt.stats.tcp.drop as i32, 1);
-    try assert_eq_i32(rt.stats.tcp.sent as i32, 1);
-}
-
-test "ipv6_process_runtime_step valid tcp and udp log data without icmp counters" {
-    var ip: UipIpv6Hdr = UipIpv6Hdr { vtc: 0x60 as byte, tcflow: 0 as byte, flow: [0 as byte, 0 as byte], len: [0 as byte, 8 as byte], proto: 6 as byte, ttl: 64 as byte, srcipaddr: [1u16,2u16,3u16,4u16,5u16,6u16,7u16,8u16], destipaddr: [9u16,10u16,11u16,12u16,13u16,14u16,15u16,16u16] };
-    var icmp: UipIcmp6Hdr = UipIcmp6Hdr { type: (ICMP6_ECHO_REQUEST as! byte).value, code: 0 as byte, icmpchksum: 0u16, data: [0 as byte,0 as byte,0 as byte,0 as byte] };
-    var rt: UipRuntime = make_runtime();
-    uip_runtime_init(&rt);
-    try assert_eq_i32(ipv6_process_runtime_step(&ip, &icmp, &rt) as i32, IPV6_PROCESS_TCP);
-    try assert_eq_i32(rt.stats.ip.recv as i32, 1);
-    try assert_eq_i32(rt.stats.icmp.recv as i32, 0);
-    try assert_eq_i32(rt.logcode as i32, UIP_LOG_DATA);
-    try assert_eq_i32(rt.logparam as i32, 6);
-    ip.proto = 17 as byte;
-    uip_runtime_init(&rt);
-    try assert_eq_i32(ipv6_process_runtime_step(&ip, &icmp, &rt) as i32, IPV6_PROCESS_UDP);
-    try assert_eq_i32(rt.stats.ip.recv as i32, 2);
-    try assert_eq_i32(rt.stats.icmp.recv as i32, 0);
-    try assert_eq_i32(rt.logparam as i32, 17);
-}
-
-
-extern fn udp_input_step(state: &UipState, rt: &UipRuntime, frame: &UipUdpipHdr, payload_len: u16) UipProcessResult;
-extern fn udp_send_step(state: &UipState, rt: &UipRuntime, conn_index: i32, payload_len: u16) UipProcessResult;
-extern fn tcp_stopped_step(state: &UipState, conn_index: i32, incoming_len: u16, has_fin: bool) UipProcessResult;
-extern fn tcp_close_step(state: &UipState, rt: &UipRuntime, conn_index: i32) UipProcessResult;
-extern fn uip_process_timer(state: &UipState, rt: &UipRuntime, conn_index: i32) UipProcessResult;

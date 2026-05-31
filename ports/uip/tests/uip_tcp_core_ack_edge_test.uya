@@ -1,0 +1,114 @@
+use std.testing;
+
+extern fn uip_process_tcp_core(state: &UipState, rt: &UipRuntime, conn_index: i32, incoming_len: u16, has_ack: bool, has_fin: bool, app_slen: u16) UipProcessResult;
+
+extern const UIP_ESTABLISHED: i32;
+
+struct UipEthAddr { addr: [byte: 6] }
+struct UipEthHdr { dest: UipEthAddr, src: UipEthAddr, type: u16 }
+struct EthIpHdr {
+    ethhdr: UipEthHdr,
+    vhl: byte,
+    tos: byte,
+    len: [byte: 2],
+    ipid: [byte: 2],
+    ipoffset: [byte: 2],
+    ttl: byte,
+    proto: byte,
+    ipchksum: u16,
+    srcipaddr: [u16: 2],
+    destipaddr: [u16: 2]
+}
+struct EthUdpHdr {
+    ethhdr: UipEthHdr,
+    vhl: byte,
+    tos: byte,
+    len: [byte: 2],
+    ipid: [byte: 2],
+    ipoffset: [byte: 2],
+    ttl: byte,
+    proto: byte,
+    ipchksum: u16,
+    srcipaddr: [u16: 2],
+    destipaddr: [u16: 2],
+    srcport: u16,
+    destport: u16,
+    udplen: u16,
+    udpchksum: u16
+}
+struct EthTcpHdr {
+    ethhdr: UipEthHdr,
+    vhl: byte,
+    tos: byte,
+    len: [byte: 2],
+    ipid: [byte: 2],
+    ipoffset: [byte: 2],
+    ttl: byte,
+    proto: byte,
+    ipchksum: u16,
+    srcipaddr: [u16: 2],
+    destipaddr: [u16: 2],
+    srcport: u16,
+    destport: u16,
+    seqno: [byte: 4],
+    ackno: [byte: 4],
+    tcpoffset: byte,
+    flags: byte,
+    wnd: [byte: 2],
+    tcpchksum: u16,
+    urgp: u16,
+    optdata: [byte: 4]
+}
+struct UipConn {
+    ripaddr: [u16: 2], lport: u16, rport: u16, rcv_nxt: [byte: 4], snd_nxt: [byte: 4], len: u16, mss: u16, initialmss: u16,
+    sa: byte, sv: byte, rto: byte, tcpstateflags: byte, timer: byte, nrtx: byte, appstate: u16
+}
+struct UipUdpConn { ripaddr: [u16: 2], lport: u16, rport: u16, ttl: byte, appstate: u16 }
+struct UipIpAddr { words: [u16: 2] }
+struct ArpHdr { ethhdr: UipEthHdr, hwtype: u16, protocol: u16, hwlen: byte, protolen: byte, opcode: u16, shwaddr: UipEthAddr, sipaddr: [u16: 2], dhwaddr: UipEthAddr, dipaddr: [u16: 2] }
+struct UipStatsBlock { drop: u16, recv: u16, sent: u16, a: u16, b: u16, c: u16, d: u16, e: u16, f: u16 }
+struct UipStatsUdpBlock { drop: u16, recv: u16, sent: u16, chkerr: u16 }
+struct UipStats { ip: UipStatsBlock, icmp: UipStatsBlock, tcp: UipStatsBlock, udp: UipStatsUdpBlock }
+struct UipRuntimeLog { code: byte, arg0: u16, arg1: u16 }
+struct UipRuntimeFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
+struct UipState { conns: [UipConn: 10], listener_ports: [u16: 10], udp_conns: [UipUdpConn: 10], hostaddr: UipIpAddr, stats: UipStats, iss: [byte: 4], lastport: u16 }
+struct UipRuntime { frame: UipRuntimeFrame, appdata: &byte, sappdata: &byte, len: u16, uip_len: u16, uip_slen: u16, flags: byte, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, stats: &UipStats, urgdata: &byte, urglen: u16, surglen: u16, logbuf: [UipRuntimeLog: 16], logcount: usize, logcode: byte, logparam: u16, current_conn: i32, current_udp_conn: i32, payload_view: &byte, payload_len: u16, input_view: &byte, input_len: u16, app_input: &byte, app_input_len: u16, app_output: &byte, slen: u16, logs: [UipRuntimeLog: 16], ipid: u16, te_reply: bool }
+struct UipProcessResult { flags: byte, len: u16, poll: bool, timed_out: bool, retransmit: bool, appcall: bool, closed: bool, logged: bool, urgdata: bool }
+
+fn make_state() UipState {
+    return UipState {
+        conns: [UipConn { ripaddr: [0u16,0u16], lport: 0u16, rport: 0u16, rcv_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], snd_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], len: 0u16, mss: 0u16, initialmss: 0u16, sa: 0 as byte, sv: 0 as byte, rto: 0 as byte, tcpstateflags: 0 as byte, timer: 0 as byte, nrtx: 0 as byte, appstate: 0u16 }: 10],
+        listener_ports: [0u16: 10], udp_conns: [UipUdpConn { ripaddr: [0u16,0u16], lport: 0u16, rport: 0u16, ttl: 0 as byte, appstate: 0u16 }: 10], hostaddr: UipIpAddr { words: [0u16,0u16] },
+        stats: UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } },
+        iss: [0 as byte,0 as byte,0 as byte,0 as byte], lastport: 0u16
+    };
+}
+
+fn make_runtime() UipRuntime {
+    var zero: byte = 0 as byte;
+    var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
+    return UipRuntime {
+        frame: UipRuntimeFrame { ethip: EthIpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16] }, ethtcp: EthTcpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, seqno: [0 as byte,0 as byte,0 as byte,0 as byte], ackno: [0 as byte,0 as byte,0 as byte,0 as byte], tcpoffset: 0 as byte, flags: 0 as byte, wnd: [0 as byte,0 as byte], tcpchksum: 0u16, urgp: 0u16, optdata: [0 as byte,0 as byte,0 as byte,0 as byte] }, ethudp: EthUdpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, udplen: 0u16, udpchksum: 0u16 }, arp: ArpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, hwtype: 0u16, protocol: 0u16, hwlen: 0 as byte, protolen: 0 as byte, opcode: 0u16, shwaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, sipaddr: [0u16,0u16], dhwaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, dipaddr: [0u16,0u16] } },
+        appdata: &zero, sappdata: &zero, len: 0u16, uip_len: 0u16, uip_slen: 0u16, flags: 0 as byte, hostaddr: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, stats: &stats, urgdata: &zero, urglen: 0u16, surglen: 0u16,
+        logbuf: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16], logcount: 0usize, logcode: 0 as byte, logparam: 0u16,
+        current_conn: 0, current_udp_conn: -1, payload_view: &zero, payload_len: 0u16, input_view: &zero, input_len: 0u16, app_input: &zero, app_input_len: 0u16, app_output: &zero, slen: 0u16,
+        logs: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16], ipid: 0u16, te_reply: false
+    };
+}
+
+test "uip_process_tcp_core established ack only with zero advertised window keeps initial mss and sends exact app_slen" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    state.conns[0].initialmss = 20u16;
+    state.conns[0].mss = 5u16;
+    rt.frame.ethtcp.wnd[0] = 0 as byte;
+    rt.frame.ethtcp.wnd[1] = 0 as byte;
+    const result: UipProcessResult = uip_process_tcp_core(&state, &rt, 0, 0u16, true, false, 9u16);
+    try assert_eq_i32(result.flags as i32, UIP_ACKDATA);
+    try assert_eq_i32(state.conns[0].mss as i32, 20);
+    try assert_eq_i32(state.conns[0].len as i32, 9);
+    try assert_eq_i32(result.len as i32, 9);
+}
+
+

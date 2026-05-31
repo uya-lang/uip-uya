@@ -1,0 +1,392 @@
+use std.testing;
+use std.testing.assert_eq_i32;
+use std.testing.assert_eq_bool;
+
+extern fn uip_process_timer(state: &UipState, rt: &UipRuntime, conn_index: i32) UipProcessResult;
+extern fn tcp_established_data_step(state: &UipState, runtime: &UipRuntime, conn_index: i32, incoming_len: u16, app_slen: u16) UipProcessResult;
+extern fn uip_process_core(state: &UipState, runtime: &UipRuntime, flag: i32, conn_index: i32, incoming_len: u16, has_ack: bool, has_fin: bool, app_slen: u16) UipProcessResult;
+extern fn tcp_syn_sent_step(state: &UipState, runtime: &UipRuntime, conn_index: i32, frame: &UipRuntimeFrame) UipProcessResult;
+extern fn tcp_established_fin_step(state: &UipState, runtime: &UipRuntime, conn_index: i32, incoming_len: u16, has_fin: bool) UipProcessResult;
+extern fn uip_process_tcp_core(state: &UipState, runtime: &UipRuntime, conn_index: i32, incoming_len: u16, has_ack: bool, has_fin: bool, app_slen: u16) UipProcessResult;
+extern fn psock_event_from_uip(flags: byte, len: u16, slen: u16) PsockEvent;
+extern fn psock_event_from_process_result(result: &UipProcessResult, rt: &UipRuntimeEventBridge) PsockEvent;
+extern fn psock_send_from_event(psock: &Psock, event: &PsockEvent, buf: &byte, mss: u16) byte;
+extern fn psock_generator_send_from_event(psock: &Psock, event: &PsockEvent, generated_len: u16, mss: u16) byte;
+extern fn psock_readbuf_from_event(psock: &Psock, event: &PsockEvent, input: &byte) byte;
+extern fn psock_apply_event(psock: &Psock, event: &PsockEvent) void;
+extern fn psock_init(psock: &Psock, buffer: &byte, buffersize: usize) void;
+
+extern const PT_WAITING: i32;
+extern const UIP_ESTABLISHED: i32;
+extern const UIP_TIME_WAIT: i32;
+extern const UIP_CLOSED: i32;
+extern const UIP_LAST_ACK: i32;
+extern const UIP_CLOSING: i32;
+extern const UIP_SYN_SENT: i32;
+extern const UIP_ACKDATA: i32;
+extern const UIP_TIME_WAIT_TIMEOUT: i32;
+extern const TCP_SYN: i32;
+extern const TCP_ACK: i32;
+extern const TCP_RST: i32;
+extern const PSOCK_STATE_BLOCKED_CLOSE: i32;
+
+struct UipEthAddr { addr: [byte: 6] }
+struct UipEthHdr { dest: UipEthAddr, src: UipEthAddr, type: u16 }
+struct EthIpHdr {
+    ethhdr: UipEthHdr,
+    vhl: byte,
+    tos: byte,
+    len: [byte: 2],
+    ipid: [byte: 2],
+    ipoffset: [byte: 2],
+    ttl: byte,
+    proto: byte,
+    ipchksum: u16,
+    srcipaddr: [u16: 2],
+    destipaddr: [u16: 2]
+}
+struct EthTcpHdr {
+    ethhdr: UipEthHdr,
+    vhl: byte,
+    tos: byte,
+    len: [byte: 2],
+    ipid: [byte: 2],
+    ipoffset: [byte: 2],
+    ttl: byte,
+    proto: byte,
+    ipchksum: u16,
+    srcipaddr: [u16: 2],
+    destipaddr: [u16: 2],
+    srcport: u16,
+    destport: u16,
+    seqno: [byte: 4],
+    ackno: [byte: 4],
+    tcpoffset: byte,
+    flags: byte,
+    wnd: [byte: 2],
+    tcpchksum: u16,
+    urgp: u16,
+    optdata: [byte: 4]
+}
+struct EthUdpHdr {
+    ethhdr: UipEthHdr,
+    vhl: byte,
+    tos: byte,
+    len: [byte: 2],
+    ipid: [byte: 2],
+    ipoffset: [byte: 2],
+    ttl: byte,
+    proto: byte,
+    ipchksum: u16,
+    srcipaddr: [u16: 2],
+    destipaddr: [u16: 2],
+    srcport: u16,
+    destport: u16,
+    udplen: u16,
+    udpchksum: u16
+}
+struct ArpHdr {
+    ethhdr: UipEthHdr,
+    hwtype: u16,
+    protocol: u16,
+    hwlen: byte,
+    protolen: byte,
+    opcode: u16,
+    shwaddr: UipEthAddr,
+    sipaddr: [u16: 2],
+    dhwaddr: UipEthAddr,
+    dipaddr: [u16: 2]
+}
+struct UipRuntimeFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
+struct UipIpAddr { words: [u16: 2] }
+struct UipStatsBlock { drop: u16, recv: u16, sent: u16, a: u16, b: u16, c: u16, d: u16, e: u16, f: u16 }
+struct UipStatsUdpBlock { drop: u16, recv: u16, sent: u16, chkerr: u16 }
+struct UipStats { ip: UipStatsBlock, icmp: UipStatsBlock, tcp: UipStatsBlock, udp: UipStatsUdpBlock }
+struct UipRuntimeLog { code: byte, arg0: u16, arg1: u16 }
+struct UipConn {
+    ripaddr: [u16: 2],
+    lport: u16,
+    rport: u16,
+    rcv_nxt: [byte: 4],
+    snd_nxt: [byte: 4],
+    len: u16,
+    mss: u16,
+    initialmss: u16,
+    sa: byte,
+    sv: byte,
+    rto: byte,
+    tcpstateflags: byte,
+    timer: byte,
+    nrtx: byte,
+    appstate: u16
+}
+struct UipUdpConn { ripaddr: [u16: 2], lport: u16, rport: u16, ttl: byte, appstate: u16 }
+struct UipState { conns: [UipConn: 10], listener_ports: [u16: 10], udp_conns: [UipUdpConn: 10], hostaddr: UipIpAddr, stats: UipStats, iss: [byte: 4], lastport: u16 }
+struct UipRuntime {
+    frame: UipRuntimeFrame,
+    hostaddr: UipIpAddr,
+    draddr: UipIpAddr,
+    netmask: UipIpAddr,
+    appdata: &byte,
+    sappdata: &byte,
+    urgdata: &byte,
+    len: u16,
+    uip_len: u16,
+    uip_slen: u16,
+    slen: u16,
+    urglen: u16,
+    surglen: u16,
+    flags: byte,
+    current_conn: i32,
+    current_udp_conn: i32,
+    payload_view: &byte,
+    payload_len: u16,
+    input_view: &byte,
+    input_len: u16,
+    app_input: &byte,
+    app_input_len: u16,
+    app_output: &byte,
+    logbuf: [UipRuntimeLog: 16],
+    logcount: usize,
+    logcode: byte,
+    logparam: u16,
+    logs: [UipRuntimeLog: 16],
+    ipid: u16,
+    stats: &UipStats,
+    te_reply: bool
+}
+struct UipProcessResult { flags: byte, len: u16, poll: bool, timed_out: bool, retransmit: bool, appcall: bool, closed: bool, logged: bool, urgdata: bool }
+struct UipRuntimeEventBridge { flags: byte, len: u16, slen: u16 }
+struct PsockEvent { acked: bool, newdata: bool, rexmit: bool, closed: bool, polled: bool, timed_out: bool, aborted: bool, connected: bool, data_len: u16, send_len: u16 }
+struct Pt { lc: u16, yielded: bool, waiting: bool, exit_requested: bool, restart_requested: bool, spawned: bool }
+struct PsockBuf { ptr: &byte, left: u16 }
+struct Psock {
+    pt: Pt,
+    psockpt: Pt,
+    sendptr: &byte,
+    readptr: &byte,
+    bufptr: &byte,
+    sendlen: u16,
+    readlen: u16,
+    event_readlen: u16,
+    buf: PsockBuf,
+    bufsize: usize,
+    state: byte,
+    lastlen: u16
+}
+
+fn make_runtime() UipRuntime {
+    var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
+    var rt: UipRuntime = UipRuntime {
+        frame: UipRuntimeFrame {
+            ethip: EthIpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16] },
+            ethtcp: EthTcpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, seqno: [0 as byte,0 as byte,0 as byte,0 as byte], ackno: [0 as byte,0 as byte,0 as byte,0 as byte], tcpoffset: 0 as byte, flags: 0 as byte, wnd: [0 as byte,0 as byte], tcpchksum: 0u16, urgp: 0u16, optdata: [0 as byte,0 as byte,0 as byte,0 as byte] },
+            ethudp: EthUdpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, udplen: 0u16, udpchksum: 0u16 },
+            arp: ArpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, hwtype: 0u16, protocol: 0u16, hwlen: 0 as byte, protolen: 0 as byte, opcode: 0u16, shwaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, sipaddr: [0u16,0u16], dhwaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, dipaddr: [0u16,0u16] }
+        },
+        hostaddr: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, appdata: null, sappdata: null, urgdata: null, len: 0u16, uip_len: 0u16, uip_slen: 0u16, slen: 0u16, urglen: 0u16, surglen: 0u16, flags: 0 as byte, current_conn: -1, current_udp_conn: -1, payload_view: null, payload_len: 0u16, input_view: null, input_len: 0u16, app_input: null, app_input_len: 0u16, app_output: null, logbuf: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16], logcount: 0usize, logcode: 0 as byte, logparam: 0u16, logs: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16], ipid: 0u16,
+        stats: &stats,
+        te_reply: false
+    };
+    return rt;
+}
+
+fn make_state() UipState {
+    return UipState { listener_ports: [0u16: 10], conns: [UipConn { ripaddr: [0u16,0u16], lport: 0u16, rport: 0u16, rcv_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], snd_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], len: 0u16, mss: 0u16, initialmss: 0u16, sa: 0 as byte, sv: 0 as byte, rto: 0 as byte, tcpstateflags: 0 as byte, timer: 0 as byte, nrtx: 0 as byte, appstate: 0u16 }: 10], udp_conns: [UipUdpConn { ripaddr: [0u16,0u16], lport: 0u16, rport: 0u16, ttl: 0 as byte, appstate: 0u16 }: 10], hostaddr: UipIpAddr { words: [0u16,0u16] }, stats: UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } }, iss: [0 as byte,0 as byte,0 as byte,0 as byte], lastport: 0u16 };
+}
+
+fn make_psock(storage: &byte, size: usize) Psock {
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, event_readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, storage, size);
+    return ps;
+}
+
+test "psock_apply_event rexmit preserves blocked close state" {
+    var storage: [byte: 8] = [0: 8];
+    var ps: Psock = make_psock(&storage[0], 8);
+    ps.state = (PSOCK_STATE_BLOCKED_CLOSE as! byte).value;
+    ps.sendlen = 4u16;
+    const ev: PsockEvent = PsockEvent { acked: false, newdata: false, rexmit: true, closed: false, polled: false, timed_out: false, aborted: false, connected: false, data_len: 0u16, send_len: 0u16 };
+    psock_apply_event(&ps, &ev);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_CLOSE);
+}
+
+
+test "bridge tcp_established_data_step ack into psock_send_from_event" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    state.conns[0].initialmss = 10u16;
+    state.conns[0].mss = 10u16;
+    state.conns[0].len = 4u16;
+    rt.flags = (UIP_ACKDATA as! byte).value;
+    rt.frame.ethtcp.wnd[0] = 0 as byte;
+    rt.frame.ethtcp.wnd[1] = 6 as byte;
+    const result: UipProcessResult = tcp_established_data_step(&state, &rt, 0, 0u16, 6u16);
+    var bridge: UipRuntimeEventBridge = UipRuntimeEventBridge { flags: result.flags, len: rt.len, slen: rt.slen };
+    const ev: PsockEvent = psock_event_from_process_result(&result, &bridge);
+    var storage: [byte: 8] = [0: 8];
+    var payload: [byte: 6] = [1, 2, 3, 4, 5, 6];
+    var ps: Psock = make_psock(&storage[0], 8);
+    try assert_eq_i32(psock_send_from_event(&ps, &ev, &payload[0], 6u16) as i32, PT_WAITING);
+    try assert_eq_bool(ev.acked, true);
+    try assert_eq_i32(ps.sendlen as i32, 6);
+    try assert_eq_i32(ps.lastlen as i32, 6);
+}
+
+test "bridge timed_out result closes psock via apply_event" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    state.conns[0].len = 9u16;
+    state.conns[0].timer = 0 as byte;
+    state.conns[0].rto = 3 as byte;
+    state.conns[0].nrtx = 8 as byte;
+    const result: UipProcessResult = uip_process_timer(&state, &rt, 0);
+    var bridge: UipRuntimeEventBridge = UipRuntimeEventBridge { flags: result.flags, len: result.len, slen: rt.slen };
+    const ev: PsockEvent = psock_event_from_process_result(&result, &bridge);
+    var storage: [byte: 4] = [0: 4];
+    var ps: Psock = make_psock(&storage[0], 4);
+    psock_apply_event(&ps, &ev);
+    try assert_eq_bool(ev.timed_out, true);
+    try assert_eq_bool(ev.closed, true);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_CLOSE);
+}
+
+test "bridge abort result closes psock via apply_event" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    const result: UipProcessResult = uip_process_core(&state, &rt, 0, -1, 0u16, false, false, 0u16);
+    var bridge: UipRuntimeEventBridge = UipRuntimeEventBridge { flags: result.flags, len: result.len, slen: rt.slen };
+    const ev: PsockEvent = psock_event_from_process_result(&result, &bridge);
+    var storage: [byte: 4] = [0: 4];
+    var ps: Psock = make_psock(&storage[0], 4);
+    psock_apply_event(&ps, &ev);
+    try assert_eq_bool(ev.aborted, true);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_CLOSE);
+}
+
+test "bridge connected result preserves open psock state" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_SYN_SENT as! byte).value;
+    rt.flags = (UIP_ACKDATA as! byte).value;
+    rt.frame.ethtcp.flags = ((TCP_SYN | TCP_ACK) as! byte).value;
+    const result: UipProcessResult = tcp_syn_sent_step(&state, &rt, 0, &rt.frame);
+    var bridge: UipRuntimeEventBridge = UipRuntimeEventBridge { flags: result.flags, len: rt.len, slen: rt.slen };
+    const ev: PsockEvent = psock_event_from_process_result(&result, &bridge);
+    var storage: [byte: 4] = [0: 4];
+    var ps: Psock = make_psock(&storage[0], 4);
+    psock_apply_event(&ps, &ev);
+    try assert_eq_bool(ev.connected, true);
+    try assert_eq_bool(ev.closed, false);
+    try assert_eq_bool(ev.acked, false);
+    try assert_eq_bool(ev.newdata, false);
+    try assert_eq_i32(ps.state as i32, 0);
+}
+
+test "bridge close plus newdata preserves newdata flag while close wins state" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    const result: UipProcessResult = tcp_established_fin_step(&state, &rt, 0, 3u16, true);
+    var bridge: UipRuntimeEventBridge = UipRuntimeEventBridge { flags: result.flags, len: 3u16, slen: rt.slen };
+    const ev: PsockEvent = psock_event_from_process_result(&result, &bridge);
+    var storage: [byte: 8] = [0: 8];
+    var ps: Psock = make_psock(&storage[0], 8);
+    psock_apply_event(&ps, &ev);
+    try assert_eq_bool(ev.closed, true);
+    try assert_eq_bool(ev.newdata, true);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_CLOSE);
+}
+
+test "bridge rst close path closes psock" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    rt.frame.ethtcp.flags = (TCP_RST as! byte).value;
+    const result: UipProcessResult = uip_process_tcp_core(&state, &rt, 0, 0u16, false, false, 0u16);
+    var bridge: UipRuntimeEventBridge = UipRuntimeEventBridge { flags: result.flags, len: result.len, slen: rt.slen };
+    const ev: PsockEvent = psock_event_from_process_result(&result, &bridge);
+    var storage: [byte: 4] = [0: 4];
+    var ps: Psock = make_psock(&storage[0], 4);
+    psock_apply_event(&ps, &ev);
+    try assert_eq_bool(result.closed, true);
+    try assert_eq_bool(ev.closed, true);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_CLOSE);
+}
+
+test "bridge last_ack ack close path clears pending send pointer while preserving length" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_LAST_ACK as! byte).value;
+    const result: UipProcessResult = uip_process_tcp_core(&state, &rt, 0, 0u16, true, false, 0u16);
+    var bridge: UipRuntimeEventBridge = UipRuntimeEventBridge { flags: result.flags, len: result.len, slen: 5u16 };
+    const ev: PsockEvent = psock_event_from_process_result(&result, &bridge);
+    var storage: [byte: 8] = [0: 8];
+    var payload: [byte: 5] = [1, 2, 3, 4, 5];
+    var ps: Psock = make_psock(&storage[0], 8);
+    var send_ev: PsockEvent = psock_event_from_uip(0 as byte, 0u16, 5u16);
+    _ = psock_send_from_event(&ps, &send_ev, &payload[0], 2u16);
+    psock_apply_event(&ps, &ev);
+    try assert_eq_bool(result.closed, true);
+    try assert_eq_bool(ev.closed, true);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_CLOSE);
+    try assert_eq_i32(ps.sendlen as i32, 5);
+    try assert_eq_i32(@usize_from_ptr(ps.sendptr as &void) as i32, 0);
+}
+
+test "bridge closing ack to time_wait does not close psock prematurely" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_CLOSING as! byte).value;
+    const result: UipProcessResult = uip_process_tcp_core(&state, &rt, 0, 0u16, true, false, 0u16);
+    var bridge: UipRuntimeEventBridge = UipRuntimeEventBridge { flags: result.flags, len: result.len, slen: rt.slen };
+    const ev: PsockEvent = psock_event_from_process_result(&result, &bridge);
+    var storage: [byte: 4] = [0: 4];
+    var ps: Psock = make_psock(&storage[0], 4);
+    psock_apply_event(&ps, &ev);
+    try assert_eq_bool(result.closed, false);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_TIME_WAIT);
+    try assert_eq_bool(ev.closed, false);
+    try assert_eq_i32(ps.state as i32, 0);
+}
+
+test "bridge fin_wait_2 fin with payload closes and exposes newdata before time_wait" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_FIN_WAIT_2 as! byte).value;
+    state.conns[0].rcv_nxt[3] = 4 as byte;
+    rt.frame.ethtcp.seqno[3] = 4 as byte;
+    const result: UipProcessResult = uip_process_tcp_core(&state, &rt, 0, 3u16, false, true, 0u16);
+    var bridge: UipRuntimeEventBridge = UipRuntimeEventBridge { flags: result.flags, len: 3u16, slen: rt.slen };
+    const ev: PsockEvent = psock_event_from_process_result(&result, &bridge);
+    var storage: [byte: 4] = [0: 4];
+    var ps: Psock = make_psock(&storage[0], 4);
+    psock_apply_event(&ps, &ev);
+    try assert_eq_bool(result.appcall, true);
+    try assert_eq_bool(ev.closed, true);
+    try assert_eq_bool(ev.newdata, true);
+    try assert_eq_i32(state.conns[0].tcpstateflags as i32, UIP_TIME_WAIT);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_CLOSE);
+}
+
+
+test "bridge tcp_established_data_step newdata feeds psock_readbuf_from_event" {
+    var state: UipState = make_state();
+    var rt: UipRuntime = make_runtime();
+    state.conns[0].tcpstateflags = (UIP_ESTABLISHED as! byte).value;
+    state.conns[0].initialmss = 10u16;
+    state.conns[0].mss = 10u16;
+    var payload_in: [byte: 3] = [21, 22, 23];
+    const result: UipProcessResult = tcp_established_data_step(&state, &rt, 0, 3u16, 0u16);
+    var bridge: UipRuntimeEventBridge = UipRuntimeEventBridge { flags: result.flags, len: 3u16, slen: rt.slen };
+    const ev: PsockEvent = psock_event_from_process_result(&result, &bridge);
+    var storage: [byte: 4] = [0: 4];
+    var ps: Psock = make_psock(&storage[0], 4);
+    try assert_eq_bool(ev.newdata, true);
+    try assert_eq_i32(psock_readbuf_from_event(&ps, &ev, &payload_in[0]) as i32, PT_WAITING);
+    try assert_eq_i32(storage[0] as i32, 21);
+    try assert_eq_i32(storage[2] as i32, 23);
+    try assert_eq_i32(ps.state as i32, 3);
+}

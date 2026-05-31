@@ -1,0 +1,122 @@
+use std.testing;
+
+extern fn pt_init(pt: &Pt) void;
+extern fn pt_resume(pt: &Pt) u16;
+extern fn pt_wait_at(pt: &Pt, line: u16, condition: bool) byte;
+extern fn pt_spawn_at(pt: &Pt, child: &Pt, line: u16, status: byte) byte;
+extern fn pt_end(pt: &Pt) byte;
+
+extern const PT_WAITING: i32;
+extern const PT_ENDED: i32;
+
+struct Pt {
+    lc: u16,
+    yielded: bool,
+    waiting: bool,
+    exit_requested: bool,
+    restart_requested: bool,
+    spawned: bool
+}
+
+fn psock_send_ack_adapter(parent: &Pt, child: &Pt, ready: bool, child_status: byte, acked: bool) byte {
+    const resume: u16 = pt_resume(parent);
+    if resume == 0u16 || resume == 10u16 {
+        const ready_wait: byte = pt_wait_at(parent, 10u16, ready);
+        if ready_wait == (PT_WAITING as! byte).value {
+            return ready_wait;
+        }
+    }
+    const send_wait: byte = pt_spawn_at(parent, child, 20u16, child_status);
+    if send_wait == (PT_WAITING as! byte).value {
+        return send_wait;
+    }
+    const ack_wait: byte = pt_wait_at(parent, 30u16, acked);
+    if ack_wait == (PT_WAITING as! byte).value {
+        return ack_wait;
+    }
+    return pt_end(parent);
+}
+
+fn psock_readto_chunk_adapter(parent: &Pt, child: &Pt, has_input: bool, child_status: byte, delimiter_found: bool) byte {
+    const resume: u16 = pt_resume(parent);
+    if resume == 0u16 || resume == 10u16 {
+        const input_wait: byte = pt_wait_at(parent, 10u16, has_input);
+        if input_wait == (PT_WAITING as! byte).value {
+            return input_wait;
+        }
+    }
+    const read_wait: byte = pt_spawn_at(parent, child, 20u16, child_status);
+    if read_wait == (PT_WAITING as! byte).value {
+        return read_wait;
+    }
+    const delim_wait: byte = pt_wait_at(parent, 30u16, delimiter_found);
+    if delim_wait == (PT_WAITING as! byte).value {
+        return delim_wait;
+    }
+    return pt_end(parent);
+}
+
+
+
+fn psock_readbuf_drain_adapter(parent: &Pt, child: &Pt, has_input: bool, child_status: byte, drained: bool) byte {
+    const resume: u16 = pt_resume(parent);
+    if resume == 0u16 || resume == 10u16 {
+        const input_wait: byte = pt_wait_at(parent, 10u16, has_input);
+        if input_wait == (PT_WAITING as! byte).value {
+            return input_wait;
+        }
+    }
+    const read_wait: byte = pt_spawn_at(parent, child, 20u16, child_status);
+    if read_wait == (PT_WAITING as! byte).value {
+        return read_wait;
+    }
+    const drain_wait: byte = pt_wait_at(parent, 30u16, drained);
+    if drain_wait == (PT_WAITING as! byte).value {
+        return drain_wait;
+    }
+    return pt_end(parent);
+}
+
+test "psock send ack adapter mirrors helper style migration" {
+    var parent: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    var child: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    pt_init(&parent);
+    pt_init(&child);
+    try assert_eq_i32(psock_send_ack_adapter(&parent, &child, false, (PT_WAITING as! byte).value, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_i32(psock_send_ack_adapter(&parent, &child, true, (PT_WAITING as! byte).value, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_i32(psock_send_ack_adapter(&parent, &child, true, (PT_ENDED as! byte).value, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_i32(psock_send_ack_adapter(&parent, &child, true, (PT_ENDED as! byte).value, true) as i32, 0);
+}
+
+
+test "psock readto chunk adapter mirrors helper style migration" {
+    var parent: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    var child: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    pt_init(&parent);
+    pt_init(&child);
+    try assert_eq_i32(psock_readto_chunk_adapter(&parent, &child, false, (PT_WAITING as! byte).value, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_i32(psock_readto_chunk_adapter(&parent, &child, true, (PT_WAITING as! byte).value, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_i32(psock_readto_chunk_adapter(&parent, &child, true, (PT_ENDED as! byte).value, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_i32(psock_readto_chunk_adapter(&parent, &child, true, (PT_ENDED as! byte).value, true) as i32, 0);
+}
+
+test "psock readbuf drain adapter mirrors helper style migration" {
+    var parent: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    var child: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    pt_init(&parent);
+    pt_init(&child);
+    try assert_eq_i32(psock_readbuf_drain_adapter(&parent, &child, false, (PT_WAITING as! byte).value, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_i32(psock_readbuf_drain_adapter(&parent, &child, true, (PT_WAITING as! byte).value, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_i32(psock_readbuf_drain_adapter(&parent, &child, true, (PT_ENDED as! byte).value, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_i32(psock_readbuf_drain_adapter(&parent, &child, true, (PT_ENDED as! byte).value, true) as i32, 0);
+}
+

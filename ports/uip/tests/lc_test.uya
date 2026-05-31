@@ -26,8 +26,10 @@ test "lc_resume returns stored line" {
     try assert_eq_i32(lc_resume(&lc) as i32, 99);
 }
 
-test "lc_end resets continuation state" {
-    var lc: Lc = Lc { line: 7u16 };
+test "lc_set then lc_end clears stored continuation line" {
+    var lc: Lc = Lc { line: 0u16 };
+    lc_set(&lc, 123u16);
+    try assert_eq_i32(lc_resume(&lc) as i32, 123);
     lc_end(&lc);
-    try assert_eq_i32(lc.line as i32, 0);
+    try assert_eq_i32(lc_resume(&lc) as i32, 0);
 }

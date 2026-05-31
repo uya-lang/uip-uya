@@ -18,29 +18,24 @@ struct UipStatsBlock { drop: u16, recv: u16, sent: u16, a: u16, b: u16, c: u16, 
 struct UipStatsUdpBlock { drop: u16, recv: u16, sent: u16, chkerr: u16 }
 struct UipStats { ip: UipStatsBlock, icmp: UipStatsBlock, tcp: UipStatsBlock, udp: UipStatsUdpBlock }
 
-test "uip_process_core routes udp timer flag to timer handler" {
+test "udp_input_step miss resets current selection to invalid and clears len" {
     var rt: UipRuntime = make_runtime();
     var state: UipState = make_state();
-    rt.frame.ethip.proto = (UIP_PROTO_TCP as! byte).value;
-    rt.frame.ethtcp.proto = (UIP_PROTO_TCP as! byte).value;
-    rt.frame.ethtcp.ackno[3] = 1 as byte;
-    rt.frame.ethtcp.tcpoffset = 0x50 as byte;
-    rt.frame.ethtcp.flags = (TCP_ACK as! byte).value;
-    rt.len = 99u16;
-    rt.slen = 88u16;
-    rt.current_conn = 7;
-    rt.current_udp_conn = -1;
-    const result: UipProcessResult = uip_process_core(&state, &rt, UIP_UDP_TIMER, 3, 0u16, false, false, 0u16);
-    try assert_eq_bool(result.poll, true);
-    try assert_eq_i32(rt.current_conn, -1);
-    try assert_eq_i32(rt.current_udp_conn, 3);
-    try assert_eq_i32(rt.flags as i32, UIP_POLL);
+    rt.current_udp_conn = 6;
+    rt.len = 33u16;
+    var frame: UipUdpipHdr = UipUdpipHdr { vtc: 0 as byte, tcflow: 0 as byte, flow: 0u16, len: [0 as byte,0 as byte], proto: 0 as byte, ttl: 0 as byte, srcipaddr: [uip_ipaddr(10 as byte, 0 as byte, 0 as byte, 7 as byte).words[0], uip_ipaddr(10 as byte, 0 as byte, 0 as byte, 7 as byte).words[1]], destipaddr: [0u16,0u16], srcport: htons(1234u16), destport: htons(4321u16), udplen: 0u16, udpchksum: 0u16 };
+    const result: UipProcessResult = udp_input_step(&state, &rt, &frame, 12u16);
+    try assert_eq_bool(result.appcall, false);
+    try assert_eq_i32(rt.current_udp_conn as i32, -1);
+    try assert_eq_i32(rt.len as i32, 0);
+    try assert_eq_i32(rt.stats.udp.drop as i32, 1);
 }
+
 
 fn make_runtime() UipRuntime {
     var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
     var rt: UipRuntime = UipRuntime {
-        frame: UipFrame {
+        frame: UipRuntimeFrame {
             ethip: EthIpHdr {
                 ethhdr: UipEthHdr {
                     dest: UipEthAddr { addr: [0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte] },
@@ -130,27 +125,38 @@ fn make_runtime() UipRuntime {
         sappdata: null,
         urgdata: null,
         len: 0u16,
+        uip_len: 0u16,
+        uip_slen: 0u16,
         slen: 0u16,
         urglen: 0u16,
         surglen: 0u16,
         flags: 0 as byte,
         current_conn: 0,
         current_udp_conn: 0,
-        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
-        ipid: 0u16,
-        iss: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+        payload_view: null,
+        payload_len: 0u16,
+        input_view: null,
+        input_len: 0u16,
+        app_input: null,
+        app_input_len: 0u16,
+        app_output: null,
+        logbuf: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16],
+        logcount: 0usize,
         logcode: 0 as byte,
         logparam: 0u16,
-        stats: &stats
+        logs: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16],
+        ipid: 0u16,
+        stats: &stats,
+        te_reply: false
     };
     return rt;
 }
 
 fn make_state() UipState {
     var state: UipState = UipState {
-        listenports: [0u16: 20],
+        listener_ports: [0u16: 10],
         conns: [UipConn {
-            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            ripaddr: [0u16, 0u16],
             lport: 0u16,
             rport: 0u16,
             rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
@@ -167,15 +173,15 @@ fn make_state() UipState {
             appstate: 0u16
         }: 10],
         udp_conns: [UipUdpConn {
-            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            ripaddr: [0u16, 0u16],
             lport: 0u16,
             rport: 0u16,
             ttl: 0 as byte,
             appstate: 0u16
         }: 10],
-        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
-        flags: 0 as byte,
-        len: 0u16,
+        hostaddr: UipIpAddr { words: [0u16, 0u16] },
+        stats: UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } },
+        iss: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
         lastport: 0u16
     };
     return state;
@@ -184,7 +190,7 @@ fn make_state() UipState {
 test "udp_input_step clears selection on unmatched frame" {
     var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
     var rt: UipRuntime = UipRuntime {
-        frame: UipFrame {
+        frame: UipRuntimeFrame {
             ethip: EthIpHdr {
                 ethhdr: UipEthHdr {
                     dest: UipEthAddr { addr: [0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte] },
@@ -277,14 +283,28 @@ test "udp_input_step clears selection on unmatched frame" {
         flags: 0 as byte,
         current_conn: 4,
         current_udp_conn: 5,
-        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+        payload_view: &rt.frame.ethip.ethhdr.dest.addr[0],
+        payload_len: 0u16,
+        input_view: &rt.frame.ethip.ethhdr.dest.addr[0],
+        input_len: 0u16,
+        app_input: &rt.frame.ethip.ethhdr.dest.addr[0],
+        app_input_len: 0u16,
+        app_output: &rt.frame.ethip.ethhdr.dest.addr[0],
+        uip_len: 99u16,
+        uip_slen: 0u16,
+        logbuf: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16],
+        logcount: 0usize,
+        logcode: 0 as byte,
+        logparam: 0u16,
+        logs: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16],
         ipid: 0u16,
-        iss: [0 as byte, 0 as byte, 0 as byte, 0 as byte]
+        stats: &stats,
+        te_reply: false
     };
     var state: UipState = UipState {
-        listenports: [0u16: 20],
+        listener_ports: [0u16: 10],
         conns: [UipConn {
-            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            ripaddr: [0u16, 0u16],
             lport: 0u16,
             rport: 0u16,
             rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
@@ -301,15 +321,15 @@ test "udp_input_step clears selection on unmatched frame" {
             appstate: 0u16
         }: 10],
         udp_conns: [UipUdpConn {
-            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            ripaddr: [0u16, 0u16],
             lport: 0u16,
             rport: 0u16,
             ttl: 0 as byte,
             appstate: 0u16
         }: 10],
-        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
-        flags: 0 as byte,
-        len: 0u16,
+        hostaddr: UipIpAddr { words: [0u16, 0u16] },
+        stats: UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } },
+        iss: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
         lastport: 0u16
     };
     state.udp_conns[0].lport = htons(1234u16);
@@ -337,7 +357,7 @@ test "udp_input_step clears selection on unmatched frame" {
 test "udp_send_step fills header for connection 1 basic" {
     var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
     var rt: UipRuntime = UipRuntime {
-        frame: UipFrame {
+        frame: UipRuntimeFrame {
             ethip: EthIpHdr {
                 ethhdr: UipEthHdr {
                     dest: UipEthAddr { addr: [0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte] },
@@ -430,14 +450,28 @@ test "udp_send_step fills header for connection 1 basic" {
         flags: 0 as byte,
         current_conn: 0,
         current_udp_conn: 0,
-        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+        payload_view: &rt.frame.ethip.ethhdr.dest.addr[0],
+        payload_len: 0u16,
+        input_view: &rt.frame.ethip.ethhdr.dest.addr[0],
+        input_len: 0u16,
+        app_input: &rt.frame.ethip.ethhdr.dest.addr[0],
+        app_input_len: 0u16,
+        app_output: &rt.frame.ethip.ethhdr.dest.addr[0],
+        uip_len: 0u16,
+        uip_slen: 0u16,
+        logbuf: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16],
+        logcount: 0usize,
+        logcode: 0 as byte,
+        logparam: 0u16,
+        logs: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16],
         ipid: 0u16,
-        iss: [0 as byte, 0 as byte, 0 as byte, 0 as byte]
+        stats: &stats,
+        te_reply: false
     };
     var state: UipState = UipState {
-        listenports: [0u16: 20],
+        listener_ports: [0u16: 10],
         conns: [UipConn {
-            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            ripaddr: [0u16, 0u16],
             lport: 0u16,
             rport: 0u16,
             rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
@@ -454,18 +488,19 @@ test "udp_send_step fills header for connection 1 basic" {
             appstate: 0u16
         }: 10],
         udp_conns: [UipUdpConn {
-            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            ripaddr: [0u16, 0u16],
             lport: 0u16,
             rport: 0u16,
             ttl: 0 as byte,
             appstate: 0u16
         }: 10],
-        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
-        flags: 0 as byte,
-        len: 0u16,
+        hostaddr: UipIpAddr { words: [0u16, 0u16] },
+        stats: UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } },
+        iss: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
         lastport: 0u16
     };
-    state.udp_conns[1].ripaddr = uip_ipaddr(10, 0, 0, 9);
+    state.udp_conns[1].ripaddr[0] = uip_ipaddr(10, 0, 0, 9).words[0];
+    state.udp_conns[1].ripaddr[1] = uip_ipaddr(10, 0, 0, 9).words[1];
     state.udp_conns[1].lport = htons(2222u16);
     state.udp_conns[1].rport = htons(3333u16);
     const result: UipProcessResult = udp_send_step(&state, &rt, 1, 4u16);
@@ -556,8 +591,10 @@ struct ArpHdr {
     dipaddr: [u16: 2]
 }
 
+struct UipRuntimeLog { code: byte, arg0: u16, arg1: u16 }
+
 struct UipConn {
-    ripaddr: UipIpAddr,
+    ripaddr: [u16: 2],
     lport: u16,
     rport: u16,
     rcv_nxt: [byte: 4],
@@ -575,7 +612,7 @@ struct UipConn {
 }
 
 struct UipUdpConn {
-    ripaddr: UipIpAddr,
+    ripaddr: [u16: 2],
     lport: u16,
     rport: u16,
     ttl: byte,
@@ -583,16 +620,16 @@ struct UipUdpConn {
 }
 
 struct UipState {
-    listenports: [u16: 20],
     conns: [UipConn: 10],
+    listener_ports: [u16: 10],
     udp_conns: [UipUdpConn: 10],
-    acc32: [byte: 4],
-    flags: byte,
-    len: u16,
+    hostaddr: UipIpAddr,
+    stats: UipStats,
+    iss: [byte: 4],
     lastport: u16
 }
 
-struct UipFrame {
+struct UipRuntimeFrame {
     ethip: EthIpHdr,
     ethtcp: EthTcpHdr,
     ethudp: EthUdpHdr,
@@ -600,7 +637,7 @@ struct UipFrame {
 }
 
 struct UipRuntime {
-    frame: UipFrame,
+    frame: UipRuntimeFrame,
     hostaddr: UipIpAddr,
     draddr: UipIpAddr,
     netmask: UipIpAddr,
@@ -608,18 +645,29 @@ struct UipRuntime {
     sappdata: &byte,
     urgdata: &byte,
     len: u16,
+    uip_len: u16,
+    uip_slen: u16,
     slen: u16,
     urglen: u16,
     surglen: u16,
     flags: byte,
     current_conn: i32,
     current_udp_conn: i32,
-    acc32: [byte: 4],
-    ipid: u16,
-    iss: [byte: 4],
+    payload_view: &byte,
+    payload_len: u16,
+    input_view: &byte,
+    input_len: u16,
+    app_input: &byte,
+    app_input_len: u16,
+    app_output: &byte,
+    logbuf: [UipRuntimeLog: 16],
+    logcount: usize,
     logcode: byte,
     logparam: u16,
-    stats: &UipStats
+    logs: [UipRuntimeLog: 16],
+    ipid: u16,
+    stats: &UipStats,
+    te_reply: bool
 }
 
 struct UipProcessResult {
@@ -651,7 +699,7 @@ struct UipUdpipHdr {
 
 test "udp_matches_conn checks local port and optional remote tuple" {
     var conn: UipUdpConn = UipUdpConn {
-        ripaddr: uip_ipaddr(192, 168, 0, 9),
+        ripaddr: [uip_ipaddr(192, 168, 0, 9).words[0], uip_ipaddr(192, 168, 0, 9).words[1]],
         lport: htons(1234u16),
         rport: htons(4321u16),
         ttl: 64 as byte,
@@ -664,7 +712,7 @@ test "udp_matches_conn checks local port and optional remote tuple" {
         len: [0 as byte, 0 as byte],
         proto: 0 as byte,
         ttl: 0 as byte,
-        srcipaddr: [conn.ripaddr.words[0], conn.ripaddr.words[1]],
+        srcipaddr: [conn.ripaddr[0], conn.ripaddr[1]],
         destipaddr: [0u16, 0u16],
         srcport: htons(4321u16),
         destport: htons(1234u16),
@@ -676,9 +724,9 @@ test "udp_matches_conn checks local port and optional remote tuple" {
 
 test "udp_find_conn returns matching index" {
     var state: UipState = UipState {
-        listenports: [0u16: 20],
+        listener_ports: [0u16: 10],
         conns: [UipConn {
-            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            ripaddr: [0u16, 0u16],
             lport: 0u16,
             rport: 0u16,
             rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
@@ -695,20 +743,21 @@ test "udp_find_conn returns matching index" {
             appstate: 0u16
         }: 10],
         udp_conns: [UipUdpConn {
-            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            ripaddr: [0u16, 0u16],
             lport: 0u16,
             rport: 0u16,
             ttl: 0 as byte,
             appstate: 0u16
         }: 10],
-        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
-        flags: 0 as byte,
-        len: 0u16,
+        hostaddr: UipIpAddr { words: [0u16, 0u16] },
+        stats: UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } },
+        iss: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
         lastport: 0u16
     };
     state.udp_conns[1].lport = htons(1234u16);
     state.udp_conns[1].rport = htons(4321u16);
-    state.udp_conns[1].ripaddr = uip_ipaddr(192, 168, 0, 9);
+    state.udp_conns[1].ripaddr[0] = uip_ipaddr(192, 168, 0, 9).words[0];
+    state.udp_conns[1].ripaddr[1] = uip_ipaddr(192, 168, 0, 9).words[1];
     const frame: UipUdpipHdr = UipUdpipHdr {
         vtc: 0 as byte,
         tcflow: 0 as byte,
@@ -716,7 +765,7 @@ test "udp_find_conn returns matching index" {
         len: [0 as byte, 0 as byte],
         proto: 0 as byte,
         ttl: 0 as byte,
-        srcipaddr: [state.udp_conns[1].ripaddr.words[0], state.udp_conns[1].ripaddr.words[1]],
+        srcipaddr: [state.udp_conns[1].ripaddr[0], state.udp_conns[1].ripaddr[1]],
         destipaddr: [0u16, 0u16],
         srcport: htons(4321u16),
         destport: htons(1234u16),
@@ -729,7 +778,7 @@ test "udp_find_conn returns matching index" {
 test "udp_input_step selects matching connection and marks newdata" {
     var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
     var rt: UipRuntime = UipRuntime {
-        frame: UipFrame {
+        frame: UipRuntimeFrame {
             ethip: EthIpHdr {
                 ethhdr: UipEthHdr {
                     dest: UipEthAddr { addr: [0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte] },
@@ -822,14 +871,28 @@ test "udp_input_step selects matching connection and marks newdata" {
         flags: 0 as byte,
         current_conn: 0,
         current_udp_conn: 0,
-        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+        payload_view: &rt.frame.ethip.ethhdr.dest.addr[0],
+        payload_len: 0u16,
+        input_view: &rt.frame.ethip.ethhdr.dest.addr[0],
+        input_len: 0u16,
+        app_input: &rt.frame.ethip.ethhdr.dest.addr[0],
+        app_input_len: 0u16,
+        app_output: &rt.frame.ethip.ethhdr.dest.addr[0],
+        uip_len: 0u16,
+        uip_slen: 0u16,
+        logbuf: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16],
+        logcount: 0usize,
+        logcode: 0 as byte,
+        logparam: 0u16,
+        logs: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16],
         ipid: 0u16,
-        iss: [0 as byte, 0 as byte, 0 as byte, 0 as byte]
+        stats: &stats,
+        te_reply: false
     };
     var state: UipState = UipState {
-        listenports: [0u16: 20],
+        listener_ports: [0u16: 10],
         conns: [UipConn {
-            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            ripaddr: [0u16, 0u16],
             lport: 0u16,
             rport: 0u16,
             rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
@@ -846,15 +909,15 @@ test "udp_input_step selects matching connection and marks newdata" {
             appstate: 0u16
         }: 10],
         udp_conns: [UipUdpConn {
-            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            ripaddr: [0u16, 0u16],
             lport: 0u16,
             rport: 0u16,
             ttl: 0 as byte,
             appstate: 0u16
         }: 10],
-        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
-        flags: 0 as byte,
-        len: 0u16,
+        hostaddr: UipIpAddr { words: [0u16, 0u16] },
+        stats: UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } },
+        iss: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
         lastport: 0u16
     };
     state.udp_conns[0].lport = htons(1234u16);
@@ -882,7 +945,7 @@ test "udp_input_step selects matching connection and marks newdata" {
 test "udp_send_step fills udp header and total length detailed" {
     var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
     var rt: UipRuntime = UipRuntime {
-        frame: UipFrame {
+        frame: UipRuntimeFrame {
             ethip: EthIpHdr {
                 ethhdr: UipEthHdr {
                     dest: UipEthAddr { addr: [0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte, 0 as byte] },
@@ -975,15 +1038,29 @@ test "udp_send_step fills udp header and total length detailed" {
         flags: 0 as byte,
         current_conn: 0,
         current_udp_conn: 0,
-        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
+        payload_view: &rt.frame.ethip.ethhdr.dest.addr[0],
+        payload_len: 0u16,
+        input_view: &rt.frame.ethip.ethhdr.dest.addr[0],
+        input_len: 0u16,
+        app_input: &rt.frame.ethip.ethhdr.dest.addr[0],
+        app_input_len: 0u16,
+        app_output: &rt.frame.ethip.ethhdr.dest.addr[0],
+        uip_len: 0u16,
+        uip_slen: 0u16,
+        logbuf: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16],
+        logcount: 0usize,
+        logcode: 0 as byte,
+        logparam: 0u16,
+        logs: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16],
         ipid: 0u16,
-        iss: [0 as byte, 0 as byte, 0 as byte, 0 as byte]
+        stats: &stats,
+        te_reply: false
     };
     rt.hostaddr = uip_ipaddr(192, 168, 0, 2);
     var state: UipState = UipState {
-        listenports: [0u16: 20],
+        listener_ports: [0u16: 10],
         conns: [UipConn {
-            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            ripaddr: [0u16, 0u16],
             lport: 0u16,
             rport: 0u16,
             rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
@@ -1000,18 +1077,19 @@ test "udp_send_step fills udp header and total length detailed" {
             appstate: 0u16
         }: 10],
         udp_conns: [UipUdpConn {
-            ripaddr: UipIpAddr { words: [0u16, 0u16] },
+            ripaddr: [0u16, 0u16],
             lport: 0u16,
             rport: 0u16,
             ttl: 0 as byte,
             appstate: 0u16
         }: 10],
-        acc32: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
-        flags: 0 as byte,
-        len: 0u16,
+        hostaddr: UipIpAddr { words: [0u16, 0u16] },
+        stats: UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } },
+        iss: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
         lastport: 0u16
     };
-    state.udp_conns[0].ripaddr = uip_ipaddr(192, 168, 0, 9);
+    state.udp_conns[0].ripaddr[0] = uip_ipaddr(192, 168, 0, 9).words[0];
+    state.udp_conns[0].ripaddr[1] = uip_ipaddr(192, 168, 0, 9).words[1];
     state.udp_conns[0].lport = htons(1234u16);
     state.udp_conns[0].rport = htons(4321u16);
     state.udp_conns[0].ttl = 64 as byte;

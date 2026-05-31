@@ -1,41 +1,47 @@
-use std.testing;extern fn uiplib_ipaddrconv(addrstr: &const byte, ipaddr: &byte) byte;extern fn uiplib_ipaddrconv(addrstr: &const byte, ipaddr: &byte) byte;
+use std.testing;
 
-struct UipIpAddr { words: [u16: 2] }
+extern fn uip_packet_payload_byte(frame: &EthIpHdr, index: u16) byte;
+extern fn htons(val: u16) u16;
+
+struct UipEthAddr { addr: [byte: 6] }
 struct UipStatsBlock { drop: u16, recv: u16, sent: u16, a: u16, b: u16, c: u16, d: u16, e: u16, f: u16 }
 struct UipStatsUdpBlock { drop: u16, recv: u16, sent: u16, chkerr: u16 }
 struct UipStats { ip: UipStatsBlock, icmp: UipStatsBlock, tcp: UipStatsBlock, udp: UipStatsUdpBlock }
-struct UipEthAddr { addr: [byte: 6] }
+struct UipIpAddr { words: [u16: 2] }
+struct UipRuntimeLog { code: byte, arg0: u16, arg1: u16 }
+struct UipConn { ripaddr: [u16: 2], lport: u16, rport: u16, rcv_nxt: [byte: 4], snd_nxt: [byte: 4], len: u16, mss: u16, initialmss: u16, sa: byte, sv: byte, rto: byte, tcpstateflags: byte, timer: byte, nrtx: byte, appstate: u16 }
+struct UipUdpConn { ripaddr: [u16: 2], lport: u16, rport: u16, ttl: byte, appstate: u16 }
+struct UipState { conns: [UipConn: 10], listener_ports: [u16: 10], udp_conns: [UipUdpConn: 10], hostaddr: UipIpAddr, stats: UipStats, iss: [byte: 4], lastport: u16 }
 struct UipEthHdr { dest: UipEthAddr, src: UipEthAddr, type: u16 }
 struct EthIpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2] }
 struct EthTcpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, seqno: [byte: 4], ackno: [byte: 4], tcpoffset: byte, flags: byte, wnd: [byte: 2], tcpchksum: u16, urgp: u16, optdata: [byte: 4] }
 struct EthUdpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, udplen: u16, udpchksum: u16 }
 struct ArpHdr { ethhdr: UipEthHdr, hwtype: u16, protocol: u16, hwlen: byte, protolen: byte, opcode: u16, shwaddr: UipEthAddr, sipaddr: [u16: 2], dhwaddr: UipEthAddr, dipaddr: [u16: 2] }
-struct UipRuntimeLog { code: byte, arg0: u16, arg1: u16 }
-struct UipConn { ripaddr: [u16: 2], lport: u16, rport: u16, rcv_nxt: [byte: 4], snd_nxt: [byte: 4], len: u16, mss: u16, initialmss: u16, sa: byte, sv: byte, rto: byte, tcpstateflags: byte, timer: byte, nrtx: byte, appstate: u16 }
-struct UipUdpConn { ripaddr: [u16: 2], lport: u16, rport: u16, ttl: byte, appstate: u16 }
-struct UipState { conns: [UipConn: 10], listener_ports: [u16: 10], udp_conns: [UipUdpConn: 10], hostaddr: UipIpAddr, stats: UipStats, iss: [byte: 4], lastport: u16 }
 struct UipRuntimeFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
 struct UipRuntime { frame: UipRuntimeFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, urgdata: &byte, len: u16, uip_len: u16, uip_slen: u16, slen: u16, urglen: u16, surglen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, payload_view: &byte, payload_len: u16, input_view: &byte, input_len: u16, app_input: &byte, app_input_len: u16, app_output: &byte, logbuf: [UipRuntimeLog: 16], logcount: usize, logcode: byte, logparam: u16, logs: [UipRuntimeLog: 16], ipid: u16, stats: &UipStats, te_reply: bool }
 
-
-test "uiplib_ipaddrconv focused parses dotted quad" {
-    var ip: [byte: 4] = [];
-    const ok: byte = uiplib_ipaddrconv("192.168.0.2", &ip[0]);
-    try assert_eq_i32(ok as i32, 1);
-    try assert_eq_i32(ip[0] as i32, 192);
-    try assert_eq_i32(ip[1] as i32, 168);
-    try assert_eq_i32(ip[2] as i32, 0);
-    try assert_eq_i32(ip[3] as i32, 2);
+fn make_hdr() EthIpHdr {
+    return EthIpHdr {
+        ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 },
+        vhl: 0x45 as byte,
+        tos: 0 as byte,
+        len: [0 as byte, 0 as byte],
+        ipid: [0x12 as byte, 0x34 as byte],
+        ipoffset: [0 as byte, 0 as byte],
+        ttl: 64 as byte,
+        proto: 6 as byte,
+        ipchksum: 0u16,
+        srcipaddr: [htons(0x0a00u16), htons(0x0001u16)],
+        destipaddr: [htons(0x0a00u16), htons(0x0002u16)]
+    };
 }
 
-test "uiplib_ipaddrconv focused rejects non digit segment" {
-    var ip: [byte: 4] = [];
-    const ok: byte = uiplib_ipaddrconv("10.a.0.1", &ip[0]);
-    try assert_eq_i32(ok as i32, 0);
-}
-
-test "uiplib_ipaddrconv focused rejects overlong segment" {
-    var ip: [byte: 4] = [];
-    const ok: byte = uiplib_ipaddrconv("12345.0.0.1", &ip[0]);
-    try assert_eq_i32(ok as i32, 0);
+test "uip_packet_payload_byte respects IPv4 header length field" {
+    var bytes: [byte: 40] = [0 as byte: 40];
+    const hdr: &EthIpHdr = @ptr_from_usize(@usize_from_ptr(&bytes[0] as &void)) as &EthIpHdr;
+    hdr.vhl = 0x46 as byte;
+    bytes[24] = 0x44 as byte;
+    bytes[25] = 0x55 as byte;
+    try assert_eq_i32(uip_packet_payload_byte(hdr, 0u16) as i32, 0x44);
+    try assert_eq_i32(uip_packet_payload_byte(hdr, 1u16) as i32, 0x55);
 }

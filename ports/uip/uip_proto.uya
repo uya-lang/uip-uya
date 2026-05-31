@@ -39,6 +39,7 @@ export struct Psock {
     bufptr: &byte,
     sendlen: u16,
     readlen: u16,
+    event_readlen: u16,
     buf: PsockBuf,
     bufsize: usize,
     state: byte,
@@ -106,6 +107,53 @@ export fn pt_init(pt: &Pt) void {
     pt.spawned = false;
 }
 
+export fn pt_resume(pt: &Pt) u16 {
+    return pt.lc;
+}
+
+export fn pt_set_resume(pt: &Pt, line: u16) void {
+    pt.lc = line;
+}
+
+export fn pt_clear_resume(pt: &Pt) void {
+    pt.lc = 0u16;
+}
+
+export fn pt_wait_at(pt: &Pt, line: u16, condition: bool) byte {
+    pt_set_resume(pt, line);
+    pt.waiting = !condition;
+    if !condition {
+        return PT_WAITING as byte;
+    }
+    pt.waiting = false;
+    pt.yielded = false;
+    return PT_WAITING as byte;
+}
+
+export fn pt_wait_thread_at(pt: &Pt, line: u16, status: byte) byte {
+    pt_set_resume(pt, line);
+    const scheduled: bool = pt_schedule(status);
+    pt.waiting = scheduled;
+    if scheduled {
+        return PT_WAITING as byte;
+    }
+    pt.waiting = false;
+    pt.yielded = false;
+    return PT_WAITING as byte;
+}
+
+export fn pt_spawn_at(pt: &Pt, child: &Pt, line: u16, status: byte) byte {
+    if !pt.spawned {
+        pt_init(child);
+        pt.spawned = true;
+    }
+    const result: byte = pt_wait_thread_at(pt, line, status);
+    if !pt_schedule(status) {
+        pt.spawned = false;
+    }
+    return result;
+}
+
 export fn pt_wait_until(pt: &Pt, condition: bool) byte {
     pt.lc = 1u16;
     pt.waiting = !condition;
@@ -114,7 +162,7 @@ export fn pt_wait_until(pt: &Pt, condition: bool) byte {
     }
     pt.waiting = false;
     pt.yielded = false;
-    return PT_YIELDED as byte;
+    return PT_WAITING as byte;
 }
 
 export fn pt_wait_while(pt: &Pt, condition: bool) byte {
@@ -131,7 +179,7 @@ export fn pt_spawn(pt: &Pt, child: &Pt, status: byte) byte {
         pt.spawned = true;
     }
     const result: byte = pt_wait_thread(pt, status);
-    if result != (PT_WAITING as! byte).value {
+    if !pt_schedule(status) {
         pt.spawned = false;
     }
     return result;
@@ -157,7 +205,7 @@ export fn pt_yield_until(pt: &Pt, condition: bool) byte {
     }
     pt.yielded = false;
     pt.waiting = false;
-    return PT_WAITING as byte;
+    return PT_YIELDED as byte;
 }
 
 export fn pt_exit(pt: &Pt) byte {
@@ -195,6 +243,9 @@ export fn psock_init(psock: &Psock, buffer: &byte, buffersize: usize) void {
 }
 
 export fn psock_datalen(psock: &Psock) u16 {
+    if psock.event_readlen > 0u16 {
+        return psock.event_readlen;
+    }
     return ((psock.bufsize as! u16).value) - psock.buf.left;
 }
 
@@ -202,14 +253,21 @@ export fn psock_newdata(psock: &Psock) bool {
     if psock.readlen > 0u16 {
         return true;
     }
-    if psock.state == (2 as byte) {
+    if psock_datalen(psock) > 0u16 {
         return true;
     }
-    return psock_datalen(psock) > 0u16;
+    if psock.state == (PSOCK_STATE_READ as! byte).value {
+        psock.state = (PSOCK_STATE_BLOCKED_NEWDATA as! byte).value;
+        return false;
+    }
+    return false;
 }
 
 export fn psock_close(psock: &Psock) void {
     psock.state = (PSOCK_STATE_BLOCKED_CLOSE as! byte).value;
+    psock.sendptr = null;
+    psock.readptr = null;
+    psock.readlen = 0u16;
 }
 
 export fn psock_exit(psock: &Psock) byte {
@@ -271,9 +329,15 @@ export fn psock_apply_event(psock: &Psock, event: &PsockEvent) void {
         }
         return;
     }
-    if event.acked && psock.state == (PSOCK_STATE_DATA_SENT as! byte).value {
-        psock.state = (PSOCK_STATE_ACKED as! byte).value;
-        return;
+    if event.acked {
+        if psock.sendlen > 0u16 {
+            psock.state = (PSOCK_STATE_ACKED as! byte).value;
+            return;
+        }
+        if psock.state == (PSOCK_STATE_DATA_SENT as! byte).value {
+            psock.state = (PSOCK_STATE_ACKED as! byte).value;
+            return;
+        }
     }
     if event.newdata && psock.state != (PSOCK_STATE_BLOCKED_CLOSE as! byte).value {
         if event.data_len == 0u16 {
@@ -285,35 +349,106 @@ export fn psock_apply_event(psock: &Psock, event: &PsockEvent) void {
 }
 
 export fn psock_send_from_event(psock: &Psock, event: &PsockEvent, buf: &byte, mss: u16) byte {
-    if event.closed {
+    if event.closed || event.timed_out || event.aborted {
         psock_close(psock);
+        psock.event_readlen = 0u16;
         return PT_WAITING as byte;
     }
     return psock_send(psock, buf, event.send_len, mss, event.rexmit, event.acked);
 }
 
 export fn psock_generator_send_from_event(psock: &Psock, event: &PsockEvent, generated_len: u16, mss: u16) byte {
-    if event.closed {
+    if event.closed || event.timed_out || event.aborted {
         psock_close(psock);
+        psock.event_readlen = 0u16;
         return PT_WAITING as byte;
     }
     return psock_generator_send(psock, generated_len, mss, event.rexmit, event.acked);
 }
 
 export fn psock_readbuf_from_event(psock: &Psock, event: &PsockEvent, input: &byte) byte {
-    if event.closed {
+    if event.closed || event.timed_out || event.aborted {
         psock_close(psock);
+        psock.event_readlen = 0u16;
         return PT_WAITING as byte;
     }
-    return psock_readbuf(psock, input, event.data_len);
+    if event.data_len == 0u16 {
+        return psock_readbuf(psock, input, 0u16);
+    }
+    if psock.state == (PSOCK_STATE_BLOCKED_NEWDATA as! byte).value || psock.state == (PSOCK_STATE_READ as! byte).value {
+        const used: u16 = psock.event_readlen;
+        const total: u16 = used + event.data_len;
+        if total <= (psock.bufsize as! u16).value {
+            var i: u16 = 0u16;
+            while i < event.data_len {
+                psock.bufptr[(used + i) as usize] = input[i as usize];
+                i = i + 1u16;
+            }
+            psock.buf.ptr = @ptr_from_usize(@usize_from_ptr(psock.bufptr as &void) + (total as usize)) as &byte;
+            psock.buf.left = ((psock.bufsize as! u16).value) - total;
+            psock.readlen = total;
+            psock.event_readlen = total;
+            psock.state = (PSOCK_STATE_READ as! byte).value;
+            if total == (psock.bufsize as! u16).value {
+                psock.readlen = 0u16;
+                psock.state = (PSOCK_STATE_NONE as! byte).value;
+                return PT_ENDED as byte;
+            }
+            psock.state = (PSOCK_STATE_BLOCKED_NEWDATA as! byte).value;
+            return PT_WAITING as byte;
+        }
+    }
+    psock.event_readlen = 0u16;
+    var result: byte = psock_readbuf(psock, input, event.data_len);
+    if result == (PT_WAITING as! byte).value || result == (PT_ENDED as! byte).value {
+        psock.event_readlen = psock_datalen(psock);
+    }
+    return result;
 }
 
 export fn psock_readto_from_event(psock: &Psock, event: &PsockEvent, endmarker: byte, input: &byte) byte {
-    if event.closed {
+    if event.closed || event.timed_out || event.aborted {
         psock_close(psock);
+        psock.event_readlen = 0u16;
         return PT_WAITING as byte;
     }
-    return psock_readto(psock, endmarker, input, event.data_len);
+    if event.data_len == 0u16 {
+        return psock_readto(psock, endmarker, input, 0u16);
+    }
+    if psock.state == (PSOCK_STATE_BLOCKED_NEWDATA as! byte).value || psock.state == (PSOCK_STATE_READ as! byte).value {
+        const used: u16 = psock.event_readlen;
+        const total: u16 = used + event.data_len;
+        if total <= (psock.bufsize as! u16).value {
+            var copied: u16 = 0u16;
+            var found: bool = false;
+            while copied < event.data_len {
+                const current: byte = input[copied as usize];
+                psock.bufptr[(used + copied) as usize] = current;
+                copied = copied + 1u16;
+                if current == endmarker {
+                    found = true;
+                    break;
+                }
+            }
+            const visible: u16 = used + copied;
+            psock.buf.ptr = @ptr_from_usize(@usize_from_ptr(psock.bufptr as &void) + (visible as usize)) as &byte;
+            psock.buf.left = ((psock.bufsize as! u16).value) - visible;
+            psock.readlen = visible;
+            psock.event_readlen = visible;
+            if found {
+                psock.state = (PSOCK_STATE_NONE as! byte).value;
+                psock.readlen = 0u16;
+                return PT_ENDED as byte;
+            }
+            psock.state = (PSOCK_STATE_BLOCKED_NEWDATA as! byte).value;
+            return PT_WAITING as byte;
+        }
+    }
+    var result: byte = psock_readto(psock, endmarker, input, event.data_len);
+    if result == (PT_WAITING as! byte).value || result == (PT_ENDED as! byte).value {
+        psock.event_readlen = psock_datalen(psock);
+    }
+    return result;
 }
 
 export fn psock_send(psock: &Psock, buf: &byte, len: u16, mss: u16, rexmit: bool, acked: bool) byte {
@@ -393,13 +528,20 @@ export fn psock_readbuf(psock: &Psock, input: &byte, input_len: u16) byte {
         return PT_WAITING as byte;
     }
     if psock.readlen == 0u16 {
-        psock_buf_setup(&psock.buf, psock.bufptr, psock.bufsize);
+        const keep_partial: bool = (psock.state == (PSOCK_STATE_BLOCKED_NEWDATA as! byte).value || psock.state == (PSOCK_STATE_READ as! byte).value) && psock_datalen(psock) > 0u16;
+        if !keep_partial {
+            psock_buf_setup(&psock.buf, psock.bufptr, psock.bufsize);
+        }
         if psock.state == (PSOCK_STATE_BLOCKED_NEWDATA as! byte).value || psock.state == (PSOCK_STATE_READ as! byte).value {
             const used: u16 = psock_datalen(psock);
             psock.buf.ptr = @ptr_from_usize(@usize_from_ptr(psock.bufptr as &void) + (used as usize)) as &byte;
             psock.buf.left = ((psock.bufsize as! u16).value) - used;
         }
         if input_len == 0u16 {
+            if psock.state == (PSOCK_STATE_BLOCKED_NEWDATA as! byte).value || psock.state == (PSOCK_STATE_READ as! byte).value {
+                psock.state = (PSOCK_STATE_BLOCKED_NEWDATA as! byte).value;
+                return PT_WAITING as byte;
+            }
             psock.state = (PSOCK_STATE_BLOCKED_NEWDATA as! byte).value;
             return PT_WAITING as byte;
         }
@@ -456,6 +598,10 @@ export fn psock_readto(psock: &Psock, endmarker: byte, input: &byte, input_len: 
             psock.buf.left = ((psock.bufsize as! u16).value) - used;
         }
         if input_len == 0u16 {
+            if psock.state == (PSOCK_STATE_BLOCKED_NEWDATA as! byte).value || psock.state == (PSOCK_STATE_READ as! byte).value {
+                psock.state = (PSOCK_STATE_BLOCKED_NEWDATA as! byte).value;
+                return PT_WAITING as byte;
+            }
             psock.state = (PSOCK_STATE_BLOCKED_NEWDATA as! byte).value;
             return PT_WAITING as byte;
         }

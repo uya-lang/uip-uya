@@ -14,7 +14,7 @@ export struct UipNeighborEntry { ipaddr: UipIpAddr, addr: UipNeighborAddr, time:
 // Canonical source of truth is ports/uip/uip_neighbor_lib.uya.
 export struct UipNeighborState { entries: [UipNeighborEntry: 8] }
 // Canonical forwarding implementation for the project lives in this file.
-export struct UipFwNetif { ipaddr: UipIpAddr, netmask: UipIpAddr, output_result: byte, output_calls: byte }
+export struct UipFwNetif { ipaddr: UipIpAddr, netmask: UipIpAddr, output_result: byte, output_calls: byte, last_len: u16 }
 export struct UipFwCacheEntry { timer: u16, srcipaddr: UipIpAddr, destipaddr: UipIpAddr, ipid: u16, proto: byte }
 export struct UipFwState { netifs: [&UipFwNetif: 4], netif_count: usize, default_index: i32, cache: [UipFwCacheEntry: 2] }
 export struct UipSplitTrace { calls: byte, sent_len0: u16, sent_len1: u16, seq0: [byte: 4], seq1: [byte: 4] }
@@ -247,6 +247,8 @@ export fn uip_fw_output(state: &UipFwState, rt: &UipRuntime) byte {
             if index < state.netif_count && index < @len(state.netifs) {
                 const netif: &UipFwNetif = state.netifs[index];
                 if netif != null {
+                    netif.last_len = rt.len;
+                    netif.last_len = rt.len;
                     netif.output_calls = netif.output_calls + (1 as byte);
                     sent = true;
                 }
@@ -261,6 +263,7 @@ export fn uip_fw_output(state: &UipFwState, rt: &UipRuntime) byte {
                     is_default = i == ((state.default_index as! usize).value);
                 }
                 if !is_default {
+                    netif.last_len = rt.len;
                     netif.output_calls = netif.output_calls + (1 as byte);
                     sent = true;
                 }
@@ -276,6 +279,7 @@ export fn uip_fw_output(state: &UipFwState, rt: &UipRuntime) byte {
     while i < state.netif_count {
         const netif: &UipFwNetif = state.netifs[i];
         if netif != null && fw_match_netif(&rt.frame.ethip, netif) {
+            netif.last_len = rt.len;
             netif.output_calls = netif.output_calls + (1 as byte);
             return netif.output_result;
         }
@@ -286,6 +290,7 @@ export fn uip_fw_output(state: &UipFwState, rt: &UipRuntime) byte {
         if index < state.netif_count && index < @len(state.netifs) {
             const netif: &UipFwNetif = state.netifs[index];
             if netif != null {
+                netif.last_len = rt.len;
                 netif.output_calls = netif.output_calls + (1 as byte);
                 return netif.output_result;
             }
@@ -311,6 +316,7 @@ export fn uip_fw_forward(state: &UipFwState, rt: &UipRuntime) byte {
         }
         i = i + 1;
     }
+    rt.te_reply = false;
     if rt.frame.ethip.ttl <= (1 as byte) {
         if is_broadcast {
             return UIP_FW_LOCAL as byte;
@@ -339,7 +345,7 @@ export fn uip_fw_forward(state: &UipFwState, rt: &UipRuntime) byte {
         state.cache[slot].destipaddr = UipIpAddr { words: [rt.frame.ethip.destipaddr[0], rt.frame.ethip.destipaddr[1]] };
     }
     if rt.len > 0u16 {
-        rt.appdata = @ptr_from_usize(@usize_from_ptr(rt as &void) + ((UIP_LLH_LEN + UIP_TCPIP_HLEN) as usize)) as &byte;
+        rt.appdata = @ptr_from_usize(@usize_from_ptr(&rt.frame.ethip as &void) + ((UIP_TCPIP_HLEN as usize))) as &byte;
         _ = uip_fw_output(state, rt);
     }
     if is_broadcast {

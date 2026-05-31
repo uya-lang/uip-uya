@@ -1,6 +1,12 @@
 use std.testing;
 
 extern fn pt_init(pt: &Pt) void;
+extern fn pt_resume(pt: &Pt) u16;
+extern fn pt_set_resume(pt: &Pt, line: u16) void;
+extern fn pt_clear_resume(pt: &Pt) void;
+extern fn pt_wait_at(pt: &Pt, line: u16, condition: bool) byte;
+extern fn pt_wait_thread_at(pt: &Pt, line: u16, status: byte) byte;
+extern fn pt_spawn_at(pt: &Pt, child: &Pt, line: u16, status: byte) byte;
 extern fn pt_wait_until(pt: &Pt, condition: bool) byte;
 extern fn pt_wait_while(pt: &Pt, condition: bool) byte;
 extern fn pt_wait_thread(pt: &Pt, status: byte) byte;
@@ -17,14 +23,279 @@ extern const PT_EXITED: i32;
 extern const PT_ENDED: i32;
 extern const PT_YIELDED: i32;
 
-struct Pt {
-    lc: u16,
-    yielded: bool,
-    waiting: bool,
-    exit_requested: bool,
-    restart_requested: bool,
-    spawned: bool
+fn demo_pt_wait_two_steps(pt: &Pt, first_ready: bool, second_ready: bool) byte {
+    const resume: u16 = pt_resume(pt);
+    if resume == 0u16 {
+        if !first_ready {
+            pt_set_resume(pt, 10u16);
+            return PT_WAITING as byte;
+        }
+    } else if resume == 10u16 {
+        if !first_ready {
+            return PT_WAITING as byte;
+        }
+    } else if resume == 20u16 {
+        if !second_ready {
+            return PT_WAITING as byte;
+        }
+        return pt_end(pt);
+    } else {
+        pt_clear_resume(pt);
+        return pt_end(pt);
+    }
+    if !second_ready {
+        pt_set_resume(pt, 20u16);
+        return PT_WAITING as byte;
+    }
+    return pt_end(pt);
 }
+
+fn demo_psock_send_template(parent: &Pt, child: &Pt, child_status: byte) byte {
+    const wait_result: byte = pt_wait_thread_at(parent, 91u16, child_status);
+    if wait_result == (PT_WAITING as! byte).value {
+        return wait_result;
+    }
+    _ = child;
+    return pt_end(parent);
+}
+
+fn demo_parent_two_stage_with_child(parent: &Pt, child: &Pt, stage1_ready: bool, child_status: byte, stage2_ready: bool) byte {
+    const resume: u16 = pt_resume(parent);
+    if resume == 0u16 || resume == 10u16 {
+        const first: byte = pt_wait_at(parent, 10u16, stage1_ready);
+        if first == (PT_WAITING as! byte).value {
+            return first;
+        }
+    }
+    const child_wait: byte = pt_spawn_at(parent, child, 20u16, child_status);
+    if child_wait == (PT_WAITING as! byte).value {
+        return child_wait;
+    }
+    const second: byte = pt_wait_at(parent, 30u16, stage2_ready);
+    if second == (PT_WAITING as! byte).value {
+        return second;
+    }
+    return pt_end(parent);
+}
+
+fn demo_realistic_psock_reader(parent: &Pt, child: &Pt, newdata_ready: bool, child_status: byte, line_done: bool) byte {
+    const resume: u16 = pt_resume(parent);
+    if resume == 0u16 || resume == 10u16 {
+        const data_wait: byte = pt_wait_at(parent, 10u16, newdata_ready);
+        if data_wait == (PT_WAITING as! byte).value {
+            return data_wait;
+        }
+    }
+    if resume == 30u16 {
+        if !line_done {
+            return PT_WAITING as byte;
+        }
+        return pt_end(parent);
+    }
+    const read_wait: byte = pt_spawn_at(parent, child, 20u16, child_status);
+    if read_wait == (PT_WAITING as! byte).value {
+        return read_wait;
+    }
+    const done_wait: byte = pt_wait_at(parent, 30u16, line_done);
+    if done_wait == (PT_WAITING as! byte).value {
+        return done_wait;
+    }
+    return pt_end(parent);
+}
+
+fn demo_realistic_psock_readbuf_loop(parent: &Pt, child: &Pt, has_input: bool, child_status: byte, has_more_data: bool) byte {
+    const resume: u16 = pt_resume(parent);
+    if resume == 0u16 || resume == 10u16 {
+        const input_wait: byte = pt_wait_at(parent, 10u16, has_input);
+        if input_wait == (PT_WAITING as! byte).value {
+            return input_wait;
+        }
+    }
+    if resume == 30u16 {
+        if has_more_data {
+            return PT_WAITING as byte;
+        }
+        return pt_end(parent);
+    }
+    const read_wait: byte = pt_spawn_at(parent, child, 20u16, child_status);
+    if read_wait == (PT_WAITING as! byte).value {
+        return read_wait;
+    }
+    const loop_wait: byte = pt_wait_at(parent, 30u16, !has_more_data);
+    if loop_wait == (PT_WAITING as! byte).value {
+        return loop_wait;
+    }
+    return pt_end(parent);
+}
+
+fn demo_realistic_psock_readto_chunks(parent: &Pt, child: &Pt, has_input: bool, child_status: byte, delimiter_found: bool) byte {
+    const resume: u16 = pt_resume(parent);
+    if resume == 0u16 || resume == 10u16 {
+        const input_wait: byte = pt_wait_at(parent, 10u16, has_input);
+        if input_wait == (PT_WAITING as! byte).value {
+            return input_wait;
+        }
+    }
+    if resume == 30u16 {
+        if !delimiter_found {
+            return PT_WAITING as byte;
+        }
+        return pt_end(parent);
+    }
+    const read_wait: byte = pt_spawn_at(parent, child, 20u16, child_status);
+    if read_wait == (PT_WAITING as! byte).value {
+        return read_wait;
+    }
+    const delim_wait: byte = pt_wait_at(parent, 30u16, delimiter_found);
+    if delim_wait == (PT_WAITING as! byte).value {
+        return delim_wait;
+    }
+    return pt_end(parent);
+}
+
+
+fn demo_interruptible_psock_flow(parent: &Pt, child: &Pt, ready: bool, child_status: byte, interrupted: bool, finished: bool) byte {
+    const resume: u16 = pt_resume(parent);
+    if interrupted {
+        return pt_end(parent);
+    }
+    if resume == 0u16 || resume == 10u16 {
+        const ready_wait: byte = pt_wait_at(parent, 10u16, ready);
+        if ready_wait == (PT_WAITING as! byte).value {
+            return ready_wait;
+        }
+    }
+    const child_wait: byte = pt_spawn_at(parent, child, 20u16, child_status);
+    if child_wait == (PT_WAITING as! byte).value {
+        return child_wait;
+    }
+    if interrupted {
+        return pt_end(parent);
+    }
+    const finish_wait: byte = pt_wait_at(parent, 30u16, finished);
+    if finish_wait == (PT_WAITING as! byte).value {
+        return finish_wait;
+    }
+    return pt_end(parent);
+}
+
+test "pt_spawn reinitializes child only on first entry and clears spawned after child ends" {
+    var parent: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    var child: Pt = Pt { lc: 77u16, yielded: true, waiting: true, exit_requested: false, restart_requested: false, spawned: false };
+    pt_init(&parent);
+    try assert_eq_i32(pt_spawn(&parent, &child, (PT_WAITING as! byte).value) as i32, PT_WAITING);
+    try assert_eq_bool(parent.spawned, true);
+    try assert_eq_i32(pt_resume(&child) as i32, 0);
+    child.lc = 55u16;
+    try assert_eq_i32(pt_spawn(&parent, &child, (PT_WAITING as! byte).value) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&child) as i32, 55);
+    try assert_eq_i32(pt_spawn(&parent, &child, (PT_ENDED as! byte).value) as i32, PT_WAITING);
+    try assert_eq_bool(parent.spawned, false);
+}
+
+
+
+test "demo realistic psock reader helper mirrors newdata-readto-line-done sequencing" {
+    var parent: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    var child: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    pt_init(&parent);
+    pt_init(&child);
+    try assert_eq_i32(demo_realistic_psock_reader(&parent, &child, false, (PT_WAITING as! byte).value, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_i32(demo_realistic_psock_reader(&parent, &child, true, (PT_WAITING as! byte).value, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_bool(parent.spawned, false);
+    try assert_eq_i32(demo_realistic_psock_reader(&parent, &child, true, (PT_ENDED as! byte).value, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_bool(parent.spawned, false);
+    try assert_eq_i32(demo_realistic_psock_reader(&parent, &child, true, (PT_ENDED as! byte).value, true) as i32, 0);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+}
+
+test "demo realistic psock readbuf loop helper mirrors readbuf-restart-until-drained sequencing" {
+    var parent: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    var child: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    pt_init(&parent);
+    pt_init(&child);
+    try assert_eq_i32(demo_realistic_psock_readbuf_loop(&parent, &child, false, (PT_WAITING as! byte).value, true) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_i32(demo_realistic_psock_readbuf_loop(&parent, &child, true, (PT_WAITING as! byte).value, true) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_bool(parent.spawned, false);
+    try assert_eq_i32(demo_realistic_psock_readbuf_loop(&parent, &child, true, (PT_ENDED as! byte).value, true) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_bool(parent.spawned, false);
+    try assert_eq_i32(demo_realistic_psock_readbuf_loop(&parent, &child, true, (PT_ENDED as! byte).value, false) as i32, 0);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+}
+
+test "demo realistic psock readto chunks helper keeps waiting until delimiter arrives" {
+    var parent: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    var child: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    pt_init(&parent);
+    pt_init(&child);
+    try assert_eq_i32(demo_realistic_psock_readto_chunks(&parent, &child, false, (PT_WAITING as! byte).value, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_i32(demo_realistic_psock_readto_chunks(&parent, &child, true, (PT_WAITING as! byte).value, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_bool(parent.spawned, false);
+    try assert_eq_i32(demo_realistic_psock_readto_chunks(&parent, &child, true, (PT_ENDED as! byte).value, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_bool(parent.spawned, false);
+    try assert_eq_i32(demo_realistic_psock_readto_chunks(&parent, &child, true, (PT_ENDED as! byte).value, true) as i32, 0);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+}
+
+test "demo interruptible psock flow exits immediately on early interrupt" {
+    var parent: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    var child: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    pt_init(&parent);
+    pt_init(&child);
+    try assert_eq_i32(demo_interruptible_psock_flow(&parent, &child, false, (PT_WAITING as! byte).value, true, false) as i32, PT_ENDED);
+    try assert_eq_i32(pt_resume(&parent) as i32, 0);
+    try assert_eq_bool(parent.spawned, false);
+}
+
+test "demo interruptible psock flow exits after child completion when interrupted" {
+    var parent: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    var child: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    pt_init(&parent);
+    pt_init(&child);
+    try assert_eq_i32(demo_interruptible_psock_flow(&parent, &child, true, (PT_WAITING as! byte).value, false, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 10);
+    try assert_eq_bool(parent.spawned, false);
+    try assert_eq_i32(demo_interruptible_psock_flow(&parent, &child, true, (PT_ENDED as! byte).value, true, false) as i32, PT_ENDED);
+    try assert_eq_i32(pt_resume(&parent) as i32, 0);
+    try assert_eq_bool(parent.spawned, false);
+}
+
+
+
+
+
+test "demo parent helper using pt_spawn_at waits for child completion then ends" {
+    var parent: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    var child: Pt = Pt { lc: 5u16, yielded: true, waiting: true, exit_requested: false, restart_requested: false, spawned: false };
+    pt_init(&parent);
+    try assert_eq_i32(demo_psock_send_template(&parent, &child, (PT_WAITING as! byte).value) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 91);
+    try assert_eq_bool(parent.waiting, true);
+    try assert_eq_i32(demo_psock_send_template(&parent, &child, (PT_ENDED as! byte).value) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 91);
+}
+
+test "pt helper demo shows explicit resume-point style parent-child sequencing" {
+    var parent: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    var child: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    pt_init(&parent);
+    pt_init(&child);
+    try assert_eq_i32(demo_psock_send_template(&parent, &child, (PT_WAITING as! byte).value) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 91);
+    try assert_eq_bool(parent.waiting, true);
+    try assert_eq_i32(demo_psock_send_template(&parent, &child, (PT_ENDED as! byte).value) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&parent) as i32, 91);
+}
+
 
 test "pt_init resets local continuation and yield flag" {
     var pt: Pt = Pt { lc: 9u16, yielded: true, waiting: true, exit_requested: true, restart_requested: true, spawned: true };
@@ -33,17 +304,68 @@ test "pt_init resets local continuation and yield flag" {
     try assert_eq_bool(pt.yielded, false);
 }
 
+
+
+test "pt_resume helpers expose explicit continuation line control" {
+    var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    try assert_eq_i32(pt_resume(&pt) as i32, 0);
+    pt_set_resume(&pt, 42u16);
+    try assert_eq_i32(pt_resume(&pt) as i32, 42);
+    pt_clear_resume(&pt);
+    try assert_eq_i32(pt_resume(&pt) as i32, 0);
+}
+
+test "pt_wait_at satisfied condition clears waiting without resetting continuation" {
+    var pt: Pt = Pt { lc: 0u16, yielded: true, waiting: true, exit_requested: false, restart_requested: false, spawned: false };
+    try assert_eq_i32(pt_wait_at(&pt, 88u16, true) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&pt) as i32, 88);
+    try assert_eq_bool(pt.waiting, false);
+    try assert_eq_bool(pt.yielded, false);
+}
+
+test "pt_wait_at stores explicit resume line and waits until condition holds" {
+    var pt: Pt = Pt { lc: 0u16, yielded: true, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    try assert_eq_i32(pt_wait_at(&pt, 55u16, false) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&pt) as i32, 55);
+    try assert_eq_bool(pt.waiting, true);
+    try assert_eq_i32(pt_wait_at(&pt, 55u16, true) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&pt) as i32, 55);
+    try assert_eq_bool(pt.waiting, false);
+    try assert_eq_bool(pt.yielded, false);
+}
+
+test "pt_wait_thread_at exited child clears waiting and preserves resume line" {
+    var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    try assert_eq_i32(pt_wait_thread_at(&pt, 67u16, (PT_WAITING as! byte).value) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&pt) as i32, 67);
+    try assert_eq_bool(pt.waiting, true);
+    try assert_eq_i32(pt_wait_thread_at(&pt, 67u16, (PT_EXITED as! byte).value) as i32, PT_WAITING);
+    try assert_eq_i32(pt_resume(&pt) as i32, 67);
+    try assert_eq_bool(pt.waiting, false);
+}
+
+
 test "pt_wait_until returns waiting until condition becomes true" {
     var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false };
     try assert_eq_i32(pt_wait_until(&pt, false) as i32, PT_WAITING);
     try assert_eq_bool(pt.waiting, true);
-    try assert_eq_i32(pt_wait_until(&pt, true) as i32, PT_YIELDED);
+    try assert_eq_i32(pt_wait_until(&pt, true) as i32, PT_WAITING);
+}
+
+
+
+test "pt_wait_until clears yielded flag when condition becomes true" {
+    var pt: Pt = Pt { lc: 5u16, yielded: true, waiting: true, exit_requested: false, restart_requested: false, spawned: false };
+    try assert_eq_i32(pt_wait_until(&pt, true) as i32, PT_WAITING);
+    try assert_eq_bool(pt.waiting, false);
+    try assert_eq_bool(pt.yielded, false);
+    try assert_eq_i32(pt.lc as i32, 1);
 }
 
 test "pt_wait_while mirrors inverse wait semantics" {
     var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false };
     try assert_eq_i32(pt_wait_while(&pt, true) as i32, PT_WAITING);
-    try assert_eq_i32(pt_wait_while(&pt, false) as i32, PT_YIELDED);
+    try assert_eq_i32(pt_wait_while(&pt, false) as i32, PT_WAITING);
 }
 
 test "pt_yield yields once and then clears yielded state" {
@@ -58,8 +380,16 @@ test "pt_yield_until keeps yielding until condition becomes true" {
     var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false };
     try assert_eq_i32(pt_yield_until(&pt, false) as i32, PT_YIELDED);
     try assert_eq_bool(pt.yielded, true);
-    try assert_eq_i32(pt_yield_until(&pt, true) as i32, PT_WAITING);
+    try assert_eq_i32(pt_yield_until(&pt, true) as i32, PT_YIELDED);
     try assert_eq_bool(pt.yielded, false);
+}
+
+test "pt_yield_until true clears waiting and yielded but keeps resume point" {
+    var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: true, exit_requested: false, restart_requested: false, spawned: false };
+    try assert_eq_i32(pt_yield_until(&pt, true) as i32, PT_YIELDED);
+    try assert_eq_bool(pt.yielded, false);
+    try assert_eq_bool(pt.waiting, false);
+    try assert_eq_i32(pt.lc as i32, 1);
 }
 
 test "pt_exit and pt_end reset pt and return terminal states" {
@@ -71,14 +401,29 @@ test "pt_exit and pt_end reset pt and return terminal states" {
     try assert_eq_i32(pt2.lc as i32, 0);
 }
 
+test "pt_spawn_at initializes child once and clears spawned after completion" {
+    var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    var child: Pt = Pt { lc: 9u16, yielded: true, waiting: true, exit_requested: false, restart_requested: false, spawned: true };
+    try assert_eq_i32(pt_spawn_at(&pt, &child, 77u16, (PT_WAITING as! byte).value) as i32, PT_WAITING);
+    try assert_eq_bool(pt.spawned, true);
+    try assert_eq_i32(pt_resume(&pt) as i32, 77);
+    try assert_eq_i32(child.lc as i32, 0);
+    child.lc = 12u16;
+    try assert_eq_i32(pt_spawn_at(&pt, &child, 77u16, (PT_WAITING as! byte).value) as i32, PT_WAITING);
+    try assert_eq_i32(child.lc as i32, 12);
+    try assert_eq_i32(pt_spawn_at(&pt, &child, 77u16, (PT_EXITED as! byte).value) as i32, PT_WAITING);
+    try assert_eq_bool(pt.spawned, false);
+}
+
 test "pt_wait_thread and pt_spawn follow child scheduling state" {
     var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false };
     var child: Pt = Pt { lc: 7u16, yielded: true, waiting: true, exit_requested: true, restart_requested: true };
     try assert_eq_i32(pt_wait_thread(&pt, (PT_WAITING as! byte).value) as i32, PT_WAITING);
-    try assert_eq_i32(pt_wait_thread(&pt, (PT_ENDED as! byte).value) as i32, PT_YIELDED);
+    try assert_eq_i32(pt_wait_thread(&pt, (PT_ENDED as! byte).value) as i32, PT_WAITING);
     try assert_eq_i32(pt_spawn(&pt, &child, (PT_WAITING as! byte).value) as i32, PT_WAITING);
     try assert_eq_i32(child.lc as i32, 0);
 }
+
 
 
 test "pt_spawn reinitializes child only on first entry and clears spawned after completion" {
@@ -89,14 +434,41 @@ test "pt_spawn reinitializes child only on first entry and clears spawned after 
     child.lc = 12u16;
     try assert_eq_i32(pt_spawn(&pt, &child, (PT_WAITING as! byte).value) as i32, PT_WAITING);
     try assert_eq_i32(child.lc as i32, 12);
-    try assert_eq_i32(pt_spawn(&pt, &child, (PT_EXITED as! byte).value) as i32, PT_YIELDED);
+    try assert_eq_i32(pt_spawn(&pt, &child, (PT_EXITED as! byte).value) as i32, PT_WAITING);
     try assert_eq_bool(pt.spawned, false);
 }
 
 test "pt_wait_thread treats both ended and exited child as complete" {
     var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
-    try assert_eq_i32(pt_wait_thread(&pt, (PT_ENDED as! byte).value) as i32, PT_YIELDED);
-    try assert_eq_i32(pt_wait_thread(&pt, (PT_EXITED as! byte).value) as i32, PT_YIELDED);
+    try assert_eq_i32(pt_wait_thread(&pt, (PT_ENDED as! byte).value) as i32, PT_WAITING);
+    try assert_eq_i32(pt_wait_thread(&pt, (PT_EXITED as! byte).value) as i32, PT_WAITING);
+}
+
+
+test "pt_restart clears exit_requested and preserves restart_requested intent" {
+    var pt: Pt = Pt { lc: 9u16, yielded: true, waiting: true, exit_requested: true, restart_requested: false, spawned: true };
+    try assert_eq_i32(pt_restart(&pt) as i32, PT_WAITING);
+    try assert_eq_bool(pt.exit_requested, false);
+    try assert_eq_bool(pt.restart_requested, true);
+    try assert_eq_i32(pt.lc as i32, 0);
+}
+
+test "pt_spawn_at completion clears parent waiting state" {
+    var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    var child: Pt = Pt { lc: 9u16, yielded: true, waiting: true, exit_requested: false, restart_requested: false, spawned: true };
+    try assert_eq_i32(pt_spawn_at(&pt, &child, 88u16, (PT_WAITING as! byte).value) as i32, PT_WAITING);
+    try assert_eq_bool(pt.waiting, true);
+    try assert_eq_i32(pt_spawn_at(&pt, &child, 88u16, (PT_EXITED as! byte).value) as i32, PT_WAITING);
+    try assert_eq_bool(pt.waiting, false);
+    try assert_eq_bool(pt.spawned, false);
+}
+
+test "pt_yield_until false preserves resume point without forcing waiting flag" {
+    var pt: Pt = Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false };
+    try assert_eq_i32(pt_yield_until(&pt, false) as i32, PT_YIELDED);
+    try assert_eq_bool(pt.yielded, true);
+    try assert_eq_bool(pt.waiting, false);
+    try assert_eq_i32(pt.lc as i32, 1);
 }
 
 

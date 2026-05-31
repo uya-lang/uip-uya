@@ -22,6 +22,17 @@ struct EthTcpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid
 struct EthUdpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, udplen: u16, udpchksum: u16 }
 struct UipFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
 
+fn zero_mac() UipEthAddr { return UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }; }
+
+fn make_frame() UipFrame {
+    return UipFrame {
+        ethip: EthIpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16] },
+        ethtcp: EthTcpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, seqno: [0 as byte,0 as byte,0 as byte,0 as byte], ackno: [0 as byte,0 as byte,0 as byte,0 as byte], tcpoffset: 0x50 as byte, flags: 0 as byte, wnd: [0 as byte,0 as byte], tcpchksum: 0u16, urgp: 0u16, optdata: [0 as byte,0 as byte,0 as byte,0 as byte] },
+        ethudp: EthUdpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, udplen: 0u16, udpchksum: 0u16 },
+        arp: ArpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, hwtype: 0u16, protocol: 0u16, hwlen: 0 as byte, protolen: 0 as byte, opcode: 0u16, shwaddr: zero_mac(), sipaddr: [0u16,0u16], dhwaddr: zero_mac(), dipaddr: [0u16,0u16] }
+    };
+}
+
 test "uip_arp_init clears arp table and timer" {
     var arp: UipArpState = UipArpState { ethaddr: UipEthAddr { addr: [1 as byte,2 as byte,3 as byte,4 as byte,5 as byte,6 as byte] }, hostaddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [1u16,2u16], ethaddr: UipEthAddr { addr: [9 as byte,9 as byte,9 as byte,9 as byte,9 as byte,9 as byte] }, time: 7 as byte }: 8], arptime: 9 as byte };
     uip_arp_init(&arp);
@@ -31,9 +42,9 @@ test "uip_arp_init clears arp table and timer" {
 }
 
 test "uip_arp_timer expires old entries" {
-    var arp: UipArpState = UipArpState { ethaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, hostaddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, time: 0 as byte }: 8], arptime: 119 as byte };
-    arp.table[0].ipaddr[0] = 1u16; arp.table[0].ipaddr[1] = 2u16; arp.table[0].time = 0 as byte;
-    arp.table[1].ipaddr[0] = 3u16; arp.table[1].ipaddr[1] = 4u16; arp.table[1].time = 119 as byte;
+    var arp: UipArpState = UipArpState { ethaddr: zero_mac(), hostaddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: zero_mac(), time: 0 as byte }: 8], arptime: 119 as byte };
+    arp.table[0].ipaddr[0] = 1u16; arp.table[0].ipaddr[1] = 2u16; arp.table[0].time = 1 as byte;
+    arp.table[1].ipaddr[0] = 3u16; arp.table[1].ipaddr[1] = 4u16; arp.table[1].time = 0 as byte;
     uip_arp_timer(&arp);
     try assert_eq_i32(arp.arptime as i32, 120);
     try assert_eq_i32(arp.table[0].ipaddr[0] as i32, 1);
@@ -41,7 +52,7 @@ test "uip_arp_timer expires old entries" {
 }
 
 test "uip_setethaddr copies all mac bytes" {
-    var arp: UipArpState = UipArpState { ethaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, hostaddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, time: 0 as byte }: 8], arptime: 0 as byte };
+    var arp: UipArpState = UipArpState { ethaddr: zero_mac(), hostaddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: zero_mac(), time: 0 as byte }: 8], arptime: 0 as byte };
     const mac: UipEthAddr = UipEthAddr { addr: [1 as byte,2 as byte,3 as byte,4 as byte,5 as byte,6 as byte] };
     uip_setethaddr(&arp, &mac);
     try assert_eq_i32(arp.ethaddr.addr[0] as i32, 1);
@@ -49,50 +60,124 @@ test "uip_setethaddr copies all mac bytes" {
 }
 
 test "uip_arp_update refreshes existing entry" {
-    var arp: UipArpState = UipArpState { ethaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, hostaddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, time: 0 as byte }: 8], arptime: 7 as byte };
+    var arp: UipArpState = UipArpState { ethaddr: zero_mac(), hostaddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: zero_mac(), time: 0 as byte }: 8], arptime: 7 as byte };
     arp.table[0].ipaddr[0] = 1u16; arp.table[0].ipaddr[1] = 2u16; arp.table[0].ethaddr.addr[0] = 9 as byte;
     const mac: UipEthAddr = UipEthAddr { addr: [1 as byte,2 as byte,3 as byte,4 as byte,5 as byte,6 as byte] };
     var ip: [u16: 2] = [1u16,2u16];
     uip_arp_update(&arp, &ip[0], &mac);
     try assert_eq_i32(arp.table[0].ethaddr.addr[0] as i32, 1);
-    try assert_eq_i32(arp.table[0].time as i32, 0);
+    try assert_eq_i32(arp.table[0].time as i32, 7);
 }
 
 test "uip_arp_update inserts into free slot" {
-    var arp: UipArpState = UipArpState { ethaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, hostaddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, time: 0 as byte }: 8], arptime: 5 as byte };
+    var arp: UipArpState = UipArpState { ethaddr: zero_mac(), hostaddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: zero_mac(), time: 0 as byte }: 8], arptime: 5 as byte };
     const mac: UipEthAddr = UipEthAddr { addr: [7 as byte,8 as byte,9 as byte,10 as byte,11 as byte,12 as byte] };
     var ip: [u16: 2] = [3u16,4u16];
     uip_arp_update(&arp, &ip[0], &mac);
     try assert_eq_i32(arp.table[0].ipaddr[0] as i32, 3);
     try assert_eq_i32(arp.table[0].ethaddr.addr[0] as i32, 7);
+    try assert_eq_i32(arp.table[0].time as i32, 5);
+}
+
+test "uip_arp_update replaces oldest entry when table is full" {
+    var arp: UipArpState = UipArpState { ethaddr: zero_mac(), hostaddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [1u16,1u16], ethaddr: UipEthAddr { addr: [1 as byte,1 as byte,1 as byte,1 as byte,1 as byte,1 as byte] }, time: 0 as byte }: 8], arptime: 20 as byte };
+    var i: usize = 0usize;
+    while i < 8usize {
+        arp.table[i].ipaddr[0] = (i as! u16).value + 1u16;
+        arp.table[i].ipaddr[1] = (i as! u16).value + 1u16;
+        arp.table[i].time = (i as! byte).value;
+        i = i + 1usize;
+    }
+    const mac: UipEthAddr = UipEthAddr { addr: [7 as byte,8 as byte,9 as byte,10 as byte,11 as byte,12 as byte] };
+    var ip: [u16: 2] = [99u16,100u16];
+    uip_arp_update(&arp, &ip[0], &mac);
+    try assert_eq_i32(arp.table[0].ipaddr[0] as i32, 99);
+    try assert_eq_i32(arp.table[0].ipaddr[1] as i32, 100);
+    try assert_eq_i32(arp.table[0].ethaddr.addr[0] as i32, 7);
+    try assert_eq_i32(arp.table[0].time as i32, 20);
 }
 
 test "uip_arp_arpin answers request for host address" {
-    var arp: UipArpState = UipArpState { ethaddr: UipEthAddr { addr: [10 as byte,11 as byte,12 as byte,13 as byte,14 as byte,15 as byte] }, hostaddr: uip_ipaddr(192,168,0,2), netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, time: 0 as byte }: 8], arptime: 4 as byte };
-    var pkt: ArpHdr = ArpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [1 as byte,2 as byte,3 as byte,4 as byte,5 as byte,6 as byte] }, type: 0u16 }, hwtype: 0u16, protocol: 0u16, hwlen: 6 as byte, protolen: 4 as byte, opcode: htons(1u16), shwaddr: UipEthAddr { addr: [1 as byte,2 as byte,3 as byte,4 as byte,5 as byte,6 as byte] }, sipaddr: [htons(0xC0A8u16), htons(0x0001u16)], dhwaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, dipaddr: [arp.hostaddr.words[0], arp.hostaddr.words[1]] };
+    var arp: UipArpState = UipArpState { ethaddr: UipEthAddr { addr: [10 as byte,11 as byte,12 as byte,13 as byte,14 as byte,15 as byte] }, hostaddr: uip_ipaddr(192,168,0,2), netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: zero_mac(), time: 0 as byte }: 8], arptime: 4 as byte };
+    var pkt: ArpHdr = ArpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: UipEthAddr { addr: [1 as byte,2 as byte,3 as byte,4 as byte,5 as byte,6 as byte] }, type: 0u16 }, hwtype: 0u16, protocol: 0u16, hwlen: 6 as byte, protolen: 4 as byte, opcode: htons(1u16), shwaddr: UipEthAddr { addr: [1 as byte,2 as byte,3 as byte,4 as byte,5 as byte,6 as byte] }, sipaddr: [htons(0xC0A8u16), htons(0x0001u16)], dhwaddr: zero_mac(), dipaddr: [arp.hostaddr.words[0], arp.hostaddr.words[1]] };
     var len: u16 = (@size_of(ArpHdr) as! u16).value;
     uip_arp_arpin(&arp, &pkt, &len);
-    try assert_eq_i32(len as i32, (@size_of(ArpHdr) as! i32).value);
-    try assert_eq_i32(pkt.opcode as i32, htons(2u16) as i32);
-    try assert_eq_i32(pkt.ethhdr.type as i32, htons(UIP_ETHTYPE_ARP as u16) as i32);
+    try assert_eq_i32(pkt.hwtype as i32, htons(1u16) as i32);
+    try assert_eq_i32(pkt.protocol as i32, htons(UIP_ETHTYPE_IP as u16) as i32);
+    try assert_eq_i32(pkt.hwlen as i32, 6);
+    try assert_eq_i32(pkt.protolen as i32, 4);
+    try assert_eq_i32(pkt.ethhdr.dest.addr[0] as i32, 1);
+    try assert_eq_i32(pkt.ethhdr.src.addr[0] as i32, 10);
+    try assert_eq_i32(pkt.dhwaddr.addr[0] as i32, 1);
+    try assert_eq_i32(pkt.shwaddr.addr[0] as i32, 10);
 }
 
 test "uip_arp_arpin updates cache on arp reply for host" {
-    var arp: UipArpState = UipArpState { ethaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, hostaddr: uip_ipaddr(192,168,0,2), netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, time: 0 as byte }: 8], arptime: 6 as byte };
-    var pkt: ArpHdr = ArpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, hwtype: 0u16, protocol: 0u16, hwlen: 6 as byte, protolen: 4 as byte, opcode: htons(2u16), shwaddr: UipEthAddr { addr: [9 as byte,8 as byte,7 as byte,6 as byte,5 as byte,4 as byte] }, sipaddr: [htons(0xC0A8u16), htons(0x0009u16)], dhwaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, dipaddr: [arp.hostaddr.words[0], arp.hostaddr.words[1]] };
+    var arp: UipArpState = UipArpState { ethaddr: zero_mac(), hostaddr: uip_ipaddr(192,168,0,2), netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: zero_mac(), time: 0 as byte }: 8], arptime: 6 as byte };
+    var pkt: ArpHdr = ArpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, hwtype: 0u16, protocol: 0u16, hwlen: 6 as byte, protolen: 4 as byte, opcode: htons(2u16), shwaddr: UipEthAddr { addr: [9 as byte,8 as byte,7 as byte,6 as byte,5 as byte,4 as byte] }, sipaddr: [htons(0xC0A8u16), htons(0x0009u16)], dhwaddr: zero_mac(), dipaddr: [arp.hostaddr.words[0], arp.hostaddr.words[1]] };
     var len: u16 = (@size_of(ArpHdr) as! u16).value;
     uip_arp_arpin(&arp, &pkt, &len);
     try assert_eq_i32(len as i32, 0);
     try assert_eq_i32(arp.table[0].ethaddr.addr[0] as i32, 9);
 }
 
+test "uip_arp_out uses default router entry for remote destination" {
+    var arp: UipArpState = UipArpState { ethaddr: UipEthAddr { addr: [10 as byte,11 as byte,12 as byte,13 as byte,14 as byte,15 as byte] }, hostaddr: uip_ipaddr(192,168,0,2), netmask: uip_ipaddr(255,255,255,0), draddr: uip_ipaddr(192,168,0,1), table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: zero_mac(), time: 0 as byte }: 8], arptime: 0 as byte };
+    arp.table[0].ipaddr[0] = arp.draddr.words[0];
+    arp.table[0].ipaddr[1] = arp.draddr.words[1];
+    arp.table[0].ethaddr.addr[0] = 9 as byte; arp.table[0].ethaddr.addr[1] = 8 as byte; arp.table[0].ethaddr.addr[2] = 7 as byte; arp.table[0].ethaddr.addr[3] = 6 as byte; arp.table[0].ethaddr.addr[4] = 5 as byte; arp.table[0].ethaddr.addr[5] = 4 as byte;
+    var frame: UipFrame = make_frame();
+    frame.ethip.destipaddr[0] = uip_ipaddr(10,0,0,9).words[0];
+    frame.ethip.destipaddr[1] = uip_ipaddr(10,0,0,9).words[1];
+    var len: u16 = 40u16;
+    uip_arp_out(&arp, &frame, &len);
+    try assert_eq_i32(frame.ethip.ethhdr.dest.addr[0] as i32, 9);
+    try assert_eq_i32(frame.ethip.ethhdr.dest.addr[5] as i32, 4);
+    try assert_eq_i32(frame.ethip.ethhdr.type as i32, htons(UIP_ETHTYPE_IP as u16) as i32);
+}
+
 test "uip_arp_out uses cached mac for local destination" {
-    var arp: UipArpState = UipArpState { ethaddr: UipEthAddr { addr: [10 as byte,11 as byte,12 as byte,13 as byte,14 as byte,15 as byte] }, hostaddr: uip_ipaddr(192,168,0,2), netmask: uip_ipaddr(255,255,255,0), draddr: uip_ipaddr(192,168,0,1), table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, time: 0 as byte }: 8], arptime: 0 as byte };
+    var arp: UipArpState = UipArpState { ethaddr: UipEthAddr { addr: [10 as byte,11 as byte,12 as byte,13 as byte,14 as byte,15 as byte] }, hostaddr: uip_ipaddr(192,168,0,2), netmask: uip_ipaddr(255,255,255,0), draddr: uip_ipaddr(192,168,0,1), table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: zero_mac(), time: 0 as byte }: 8], arptime: 0 as byte };
     arp.table[0].ipaddr[0] = htons(0xC0A8u16); arp.table[0].ipaddr[1] = htons(0x0009u16);
     arp.table[0].ethaddr.addr[0] = 1 as byte; arp.table[0].ethaddr.addr[1] = 2 as byte; arp.table[0].ethaddr.addr[2] = 3 as byte; arp.table[0].ethaddr.addr[3] = 4 as byte; arp.table[0].ethaddr.addr[4] = 5 as byte; arp.table[0].ethaddr.addr[5] = 6 as byte;
-    var frame: UipFrame = UipFrame { ethip: EthIpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [htons(0xC0A8u16), htons(0x0009u16)] }, ethtcp: EthTcpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, seqno: [0 as byte,0 as byte,0 as byte,0 as byte], ackno: [0 as byte,0 as byte,0 as byte,0 as byte], tcpoffset: 0x50 as byte, flags: 0 as byte, wnd: [0 as byte,0 as byte], tcpchksum: 0u16, urgp: 0u16, optdata: [0 as byte,0 as byte,0 as byte,0 as byte] }, ethudp: EthUdpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, udplen: 0u16, udpchksum: 0u16 }, arp: ArpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, hwtype: 0u16, protocol: 0u16, hwlen: 0 as byte, protolen: 0 as byte, opcode: 0u16, shwaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, sipaddr: [0u16,0u16], dhwaddr: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, dipaddr: [0u16,0u16] } };
+    var frame: UipFrame = make_frame();
+    frame.ethip.destipaddr[0] = htons(0xC0A8u16);
+    frame.ethip.destipaddr[1] = htons(0x0009u16);
     var len: u16 = 40u16;
     uip_arp_out(&arp, &frame, &len);
     try assert_eq_i32(frame.ethip.ethhdr.dest.addr[0] as i32, 1);
     try assert_eq_i32(frame.ethip.ethhdr.type as i32, htons(UIP_ETHTYPE_IP as u16) as i32);
+}
+
+test "uip_arp_out uses broadcast mac for local broadcast destination" {
+    var arp: UipArpState = UipArpState { ethaddr: UipEthAddr { addr: [10 as byte,11 as byte,12 as byte,13 as byte,14 as byte,15 as byte] }, hostaddr: uip_ipaddr(192,168,0,2), netmask: uip_ipaddr(255,255,255,0), draddr: uip_ipaddr(192,168,0,1), table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: zero_mac(), time: 0 as byte }: 8], arptime: 0 as byte };
+    var frame: UipFrame = make_frame();
+    frame.ethip.destipaddr[0] = 0xffffu16;
+    frame.ethip.destipaddr[1] = 0xffffu16;
+    var len: u16 = 40u16;
+    uip_arp_out(&arp, &frame, &len);
+    try assert_eq_i32(frame.ethip.ethhdr.dest.addr[0] as i32, 255);
+    try assert_eq_i32(frame.ethip.ethhdr.dest.addr[5] as i32, 255);
+    try assert_eq_i32(frame.ethip.ethhdr.type as i32, htons(UIP_ETHTYPE_IP as u16) as i32);
+}
+
+test "uip_arp_out missing entry constructs arp request" {
+    var arp: UipArpState = UipArpState { ethaddr: UipEthAddr { addr: [10 as byte,11 as byte,12 as byte,13 as byte,14 as byte,15 as byte] }, hostaddr: uip_ipaddr(192,168,0,2), netmask: uip_ipaddr(255,255,255,0), draddr: uip_ipaddr(192,168,0,1), table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: zero_mac(), time: 0 as byte }: 8], arptime: 0 as byte };
+    var frame: UipFrame = make_frame();
+    frame.ethip.destipaddr[0] = htons(0xC0A8u16);
+    frame.ethip.destipaddr[1] = htons(0x0009u16);
+    var len: u16 = 40u16;
+    uip_arp_out(&arp, &frame, &len);
+    try assert_eq_i32(frame.arp.ethhdr.type as i32, htons(UIP_ETHTYPE_ARP as u16) as i32);
+    try assert_eq_i32(frame.arp.opcode as i32, htons(1u16) as i32);
+    try assert_eq_i32(frame.arp.ethhdr.dest.addr[0] as i32, 255);
+    try assert_eq_i32(frame.arp.dhwaddr.addr[0] as i32, 0);
+    try assert_eq_i32(frame.arp.hwtype as i32, htons(1u16) as i32);
+    try assert_eq_i32(frame.arp.protocol as i32, htons(UIP_ETHTYPE_IP as u16) as i32);
+    try assert_eq_i32(frame.arp.hwlen as i32, 6);
+    try assert_eq_i32(frame.arp.protolen as i32, 4);
+    try assert_eq_i32(frame.arp.shwaddr.addr[0] as i32, 10);
+    try assert_eq_i32(frame.arp.sipaddr[0] as i32, arp.hostaddr.words[0] as i32);
+    try assert_eq_i32(frame.arp.dipaddr[0] as i32, htons(0xC0A8u16) as i32);
+    try assert_eq_i32(len as i32, (@size_of(ArpHdr) as! i32).value);
 }
