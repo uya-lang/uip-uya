@@ -89,6 +89,16 @@ export fn uip_arp_update(state: &UipArpState, ipaddr: &u16, ethaddr: &UipEthAddr
     state.table[oldest].time = state.arptime;
 }
 
+export fn uip_arp_ipin(state: &UipArpState, buf: &EthIpHdr, len: &u16) void {
+    if *len < ((@size_of(EthIpHdr) as! u16).value) {
+        return;
+    }
+    if buf.srcipaddr[0] == 0u16 && buf.srcipaddr[1] == 0u16 {
+        return;
+    }
+    uip_arp_update(state, &buf.srcipaddr[0], &buf.ethhdr.src);
+}
+
 export fn uip_arp_arpin(state: &UipArpState, buf: &ArpHdr, len: &u16) void {
     if *len < ((@size_of(ArpHdr) as! u16).value) {
         *len = 0u16;

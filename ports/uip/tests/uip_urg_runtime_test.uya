@@ -32,8 +32,30 @@ struct UipRuntimeFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, 
 struct UipRuntime { frame: UipRuntimeFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, urgdata: &byte, len: u16, uip_len: u16, uip_slen: u16, slen: u16, urglen: u16, surglen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, payload_view: &byte, payload_len: u16, input_view: &byte, input_len: u16, app_input: &byte, app_input_len: u16, app_output: &byte, logbuf: [UipRuntimeLog: 16], logcount: usize, logcode: byte, logparam: u16, logs: [UipRuntimeLog: 16], ipid: u16, stats: &UipStats, te_reply: bool }
 struct UipProcessResult { flags: byte, len: u16, poll: bool, timed_out: bool, retransmit: bool, appcall: bool, closed: bool, logged: bool, urgdata: bool }
 
+fn make_zero_stats() UipStats {
+    return UipStats {
+        ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 }
+    };
+}
+
+fn make_zero_state() UipState {
+    var state: UipState = UipState {
+        conns: [UipConn { ripaddr: [0u16,0u16], lport: 0u16, rport: 0u16, rcv_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], snd_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], len: 0u16, mss: 0u16, initialmss: 0u16, sa: 0 as byte, sv: 0 as byte, rto: 0 as byte, tcpstateflags: 0 as byte, timer: 0 as byte, nrtx: 0 as byte, appstate: 0u16 }: 10],
+        listener_ports: [0u16: 10],
+        udp_conns: [UipUdpConn { ripaddr: [0u16,0u16], lport: 0u16, rport: 0u16, ttl: 0 as byte, appstate: 0u16 }: 10],
+        hostaddr: UipIpAddr { words: [0u16,0u16] },
+        stats: make_zero_stats(),
+        iss: [0 as byte,0 as byte,0 as byte,0 as byte],
+        lastport: 0u16
+    };
+    return state;
+}
+
 fn make_runtime() UipRuntime {
-    var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
+    var stats: UipStats = make_zero_stats();
     return UipRuntime {
         frame: UipRuntimeFrame {
             ethip: EthIpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16] },
@@ -88,7 +110,7 @@ test "uip_tcp_prepare_urg without urg flag clears urgent view" {
 }
 
 test "uip_process_tcp_core urg plus ack only reports no urgent data without payload" {
-    var state: UipState = UipState { conns: [UipConn { ripaddr: [0u16, 0u16], lport: 0u16, rport: 0u16, rcv_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], snd_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], len: 0u16, mss: 0u16, initialmss: 0u16, sa: 0 as byte, sv: 0 as byte, rto: 0 as byte, tcpstateflags: 0 as byte, timer: 0 as byte, nrtx: 0 as byte, appstate: 0u16 }: 10], udp_conns: [UipUdpConn { ripaddr: [0u16, 0u16], lport: 0u16, rport: 0u16, ttl: 0 as byte, appstate: 0u16 }: 10], listener_ports: [0u16: 10], hostaddr: UipIpAddr { words: [0u16,0u16] }, stats: UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } }, iss: [0 as byte,0 as byte,0 as byte,0 as byte], lastport: 0u16 };
+    var state: UipState = make_zero_state();
     var rt: UipRuntime = make_runtime();
     var payload: [byte: 2] = [13, 14];
     uip_init(&state);
@@ -106,7 +128,7 @@ test "uip_process_tcp_core urg plus ack only reports no urgent data without payl
 }
 
 test "uip_process_tcp_core urg plus fin with payload keeps urgent flag and final data log" {
-    var state: UipState = UipState { conns: [UipConn { ripaddr: [0u16, 0u16], lport: 0u16, rport: 0u16, rcv_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], snd_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], len: 0u16, mss: 0u16, initialmss: 0u16, sa: 0 as byte, sv: 0 as byte, rto: 0 as byte, tcpstateflags: 0 as byte, timer: 0 as byte, nrtx: 0 as byte, appstate: 0u16 }: 10], udp_conns: [UipUdpConn { ripaddr: [0u16, 0u16], lport: 0u16, rport: 0u16, ttl: 0 as byte, appstate: 0u16 }: 10], listener_ports: [0u16: 10], hostaddr: UipIpAddr { words: [0u16,0u16] }, stats: UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } }, iss: [0 as byte,0 as byte,0 as byte,0 as byte], lastport: 0u16 };
+    var state: UipState = make_zero_state();
     var rt: UipRuntime = make_runtime();
     var payload: [byte: 4] = [1, 2, 3, 4];
     uip_init(&state);
@@ -124,7 +146,7 @@ test "uip_process_tcp_core urg plus fin with payload keeps urgent flag and final
 }
 
 test "uip_process_tcp_core urgent data log keeps urgent length and final data log param" {
-    var state: UipState = UipState { conns: [UipConn { ripaddr: [0u16, 0u16], lport: 0u16, rport: 0u16, rcv_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], snd_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], len: 0u16, mss: 0u16, initialmss: 0u16, sa: 0 as byte, sv: 0 as byte, rto: 0 as byte, tcpstateflags: 0 as byte, timer: 0 as byte, nrtx: 0 as byte, appstate: 0u16 }: 10], udp_conns: [UipUdpConn { ripaddr: [0u16, 0u16], lport: 0u16, rport: 0u16, ttl: 0 as byte, appstate: 0u16 }: 10], listener_ports: [0u16: 10], hostaddr: UipIpAddr { words: [0u16,0u16] }, stats: UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } }, iss: [0 as byte,0 as byte,0 as byte,0 as byte], lastport: 0u16 };
+    var state: UipState = make_zero_state();
     var rt: UipRuntime = make_runtime();
     var payload: [byte: 5] = [7, 8, 9, 10, 11];
     uip_init(&state);

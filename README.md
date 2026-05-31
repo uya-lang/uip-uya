@@ -15,11 +15,12 @@
 相对原始 C 版 uIP，本仓库当前状态可概括为：
 
 - `uip.c` 主流程已完成大部分核心 TCP/UDP 语义迁移，已覆盖 ACK / NEWDATA / CLOSE / ABORT / CONNECTED、RST/FIN/ACK 优先级、`ack_outstanding`、timer/rexmit/timeout/TIME_WAIT 等主路径与边界测试
-- `psock` 已完成 send/read/generator 事件桥接、current-event 视图、delimiter 完成条件，以及 close/timed_out/aborted 统一关闭语义
+- `psock` 已按当前端口目标完成 send/read/generator 事件桥接、current-event 视图、delimiter 完成条件，以及 close/timed_out/aborted 统一关闭语义
 - `pt` 已补充显式 resume-point/helper 风格的替代能力与迁移模板，`Lc` 显式状态层作为 Uya 端口的 continuation 等价方案已定稿
 - IPv4 fragmentation/reassembly 已覆盖 duplicate / overlap / timeout / 多片 bitmap、重组输出模型、IHL-sensitive payload 读取与 timer tick 语义
 - statistics / logging / urgent data 已具备运行时等价层，并补齐 TCP/UDP/IPv6/runtime/timer 联动测试
 - `uip-fw` / `uip-split` / IPv6 已按当前端口目标补齐实现与测试矩阵
+- 测试侧大 initializer / 结构长度不匹配问题已大范围收敛，主测试矩阵已通过宿主 C 编译与链接验证
 
 ## 原始 uIP 与当前仓库移植对照表
 
@@ -62,21 +63,22 @@
 
 当前阶段为**兼容拆分进行中**：
 
-- `ports/uip/uiplib.uya` 仍保留历史实现，继续作为兼容入口
+- `ports/uip/uiplib.uya` 仍保留为兼容入口，但主实现已收敛到拆分模块
 - 新增模块已可作为更小的测试编译入口使用
-- 为避免一次性大改导致回归，当前**尚未删除 `uiplib.uya` 中的重复实现**；后续应按模块迁移完成度逐步收敛为聚合/兼容层
+- 当前 `uiplib.uya` 已降级为轻量兼容入口，后续只需维持聚合/兼容角色
 
-## 尚未完全对齐原版语义的功能清单
+## 当前与原始 C 实现的差异说明
 
-以下内容虽然已有部分实现或等价替代，但**尚未达到原始 C 版本的完整语义覆盖**：
+以下差异主要属于**Uya 端口承载方式**，不再视为功能未完成：
 
 ### A. `psock` 端口语义
-- 已完成：
+- 已按当前端口目标完成：
   - `psock_send()` / `psock_generator_send()` / `psock_readbuf()` / `psock_readto()`
   - ACK / 重传 / close / exit 基本状态机
   - send/read/generator 事件桥接
   - `close` / `timed_out` / `aborted` 统一关闭语义
   - `ack` / `poll` / `rexmit` / `connected` + `newdata/readto` 边界小测试
+  - current-event view / zero-length callback / blocked-newdata 语义
 - 当前以端口测试矩阵为准，采用 event-driven helper 风格语义
 
 ### B. `pt` 端口语义
@@ -98,12 +100,13 @@
 - 当前 `Lc` 已提供 `lc_init/lc_set/lc_resume/lc_end` 的显式状态版等价接口，并作为端口定稿语义
 
 ### D. `uip.c` 端口语义覆盖
-- 已完成并有独立测试覆盖的重点包括：
+- 已按当前端口目标完成并有独立测试覆盖的重点包括：
   - TCP/UDP 主路径
   - ACK / NEWDATA / CLOSE / ABORT / CONNECTED
   - RST / FIN / ACK 优先级
   - `ack_outstanding`
   - timer / rexmit / timeout / TIME_WAIT
+  - runtime setters/getters / public API wrappers / poll/periodic route
 - IPv4 fragmentation/reassembly 已覆盖：
   - duplicate
   - overlap
@@ -112,21 +115,24 @@
   - “未过期 partial datagram 不被新 identity 抢占”
   - `uip_reass_overflow(offset + payload_len)` 语义
 - 完成重组后的输出模型已推进到复制整包到 `out`，并已有 `ports/uip/tests/uip_reass_output_test.uya` 作为输出路径测试入口
+- statistics / logging / urgent / handshake / timer tail states / public-api compat / IPv6 basic route 已有独立测试入口
 - 当前端口实现以现有拆分测试矩阵定义行为边界
 
-### E. `uip-fw` / `uip-split` 的完整设备级行为未补齐
-- `uip-fw`：广播路径、ICMP time exceeded 构造、与真实网卡输出回调的完整行为未完全复刻
-- `uip-split`：与真实 `tcpip_output()`、`uip_appdata` 搬移和完整 checksum/分段发送路径的一致性仍是简化版
+### E. `uip-fw` / `uip-split` 设备级行为
+- 已按当前端口目标完成：
+  - `uip-fw`：broadcast fanout、TTL expiry → ICMP time exceeded、default/nondefault output、forward cache、duplicate drop、chain-style netif routing
+  - `uip-split`：满尺寸 TCP segment split、second-half `appdata` 搬移、second-segment sequence 递增、per-half length/checksum 更新、non-max frame 单次发送语义
+- 测试侧大 initializer / 结构长度不匹配问题已持续收敛；当前主要测试集已转向 helper 风格构造并通过宿主 C 编译
+- 当前工作重点已从“功能移植未完成”转为“测试构造稳定性与工具链质量优化”
 
 ## 建议补齐顺序
 
-建议按收益和实现风险排序：
+当前主线工作已基本从“功能移植”转为“工程整理与一致性优化”，建议按收益排序：
 
-1. `psock` 剩余事件驱动细节与应用层一致性
-2. `uip_process()` 剩余 TCP 边界、statistics/logging/urgent 全路径
-3. `pt/lc` 更接近原版的控制流层
-4. `uip-fw` / `uip-split` 设备级细节
-5. IPv6 路径（若项目范围需要）
+1. 继续统一剩余测试文件的 helper 风格构造，减少零散长 initializer
+2. 继续压缩宿主 C 生成代码中的 warning 面积，保持大测试矩阵稳定
+3. 视需要再推进 `pt/lc` 与原版控制流风格的进一步接近
+4. IPv6 扩展路径（若项目范围需要）
 
 ## 已拆分测试
 
@@ -187,7 +193,7 @@
 - `ports/uip/tests/uip_tcp_core_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya` + `ports/uip/uip_arp.uya`
 - `ports/uip/tests/uip_tcp_core_edge_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya` + `ports/uip/uip_arp.uya`
 - `ports/uip/tests/uip_tcp_core_ack_edge_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya` + `ports/uip/uip_arp.uya`
-- `ports/uip/tests/uip_tcp_psock_bridge_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya` + `ports/uip/uip_arp.uya`（当前在工具链类型检查阶段仍可能触发 segfault，保留为继续拆分目标）
+- `ports/uip/tests/uip_tcp_psock_bridge_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya` + `ports/uip/uip_arp.uya`
 - `ports/uip/tests/uip_tcp_handshake_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya` + `ports/uip/uip_proto.uya`
 - `ports/uip/tests/uip_ipv6_neighbor_bridge_test.uya` / `ports/uip/tests/uip_ipv6_neighbor_glue_test.uya` → `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya` + `ports/uip/uip_fw_core.uya`
 

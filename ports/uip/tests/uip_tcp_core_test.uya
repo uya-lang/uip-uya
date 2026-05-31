@@ -485,7 +485,7 @@ fn make_runtime() UipRuntime {
 
 fn make_state() UipState {
     var state: UipState = UipState {
-        listener_ports: [0u16: 10],
+        listener_ports: [0u16: 20],
         conns: [UipConn {
             ripaddr: [0u16, 0u16],
             lport: 0u16,

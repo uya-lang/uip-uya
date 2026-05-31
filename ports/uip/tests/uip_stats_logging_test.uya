@@ -27,8 +27,26 @@ struct UipRuntimeFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, 
 struct UipRuntime { frame: UipRuntimeFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, urgdata: &byte, len: u16, uip_len: u16, uip_slen: u16, slen: u16, urglen: u16, surglen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, payload_view: &byte, payload_len: u16, input_view: &byte, input_len: u16, app_input: &byte, app_input_len: u16, app_output: &byte, logbuf: [UipRuntimeLog: 16], logcount: usize, logcode: byte, logparam: u16, logs: [UipRuntimeLog: 16], ipid: u16, stats: &UipStats, te_reply: bool }
 struct UipProcessResult { flags: byte, len: u16, poll: bool, timed_out: bool, retransmit: bool, appcall: bool, closed: bool, logged: bool, urgdata: bool }
 
+fn make_zero_stats() UipStats {
+    return UipStats {
+        ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 }
+    };
+}
+
+fn make_one_stats() UipStats {
+    return UipStats {
+        ip: UipStatsBlock { drop: 1u16, recv: 1u16, sent: 1u16, a: 1u16, b: 1u16, c: 1u16, d: 1u16, e: 1u16, f: 1u16 },
+        icmp: UipStatsBlock { drop: 1u16, recv: 1u16, sent: 1u16, a: 1u16, b: 1u16, c: 1u16, d: 1u16, e: 1u16, f: 1u16 },
+        tcp: UipStatsBlock { drop: 1u16, recv: 1u16, sent: 1u16, a: 1u16, b: 1u16, c: 1u16, d: 1u16, e: 1u16, f: 1u16 },
+        udp: UipStatsUdpBlock { drop: 1u16, recv: 1u16, sent: 1u16, chkerr: 1u16 }
+    };
+}
+
 fn make_runtime() UipRuntime {
-    var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
+    var stats: UipStats = make_zero_stats();
     return UipRuntime {
         frame: UipRuntimeFrame {
             ethip: EthIpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16] },
@@ -43,7 +61,7 @@ fn make_runtime() UipRuntime {
 }
 
 test "uip_stats_init zeros all counters" {
-    var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 1u16, recv: 1u16, sent: 1u16, a: 1u16, b: 1u16, c: 1u16, d: 1u16, e: 1u16, f: 1u16 }, icmp: UipStatsBlock { drop: 1u16, recv: 1u16, sent: 1u16, a: 1u16, b: 1u16, c: 1u16, d: 1u16, e: 1u16, f: 1u16 }, tcp: UipStatsBlock { drop: 1u16, recv: 1u16, sent: 1u16, a: 1u16, b: 1u16, c: 1u16, d: 1u16, e: 1u16, f: 1u16 }, udp: UipStatsUdpBlock { drop: 1u16, recv: 1u16, sent: 1u16, chkerr: 1u16 } };
+    var stats: UipStats = make_one_stats();
     uip_stats_init(&stats);
     try assert_eq_i32(stats.ip.recv as i32, 0);
     try assert_eq_i32(stats.tcp.sent as i32, 0);
@@ -78,7 +96,7 @@ test "uip_runtime_init resets host routing addresses" {
 
 
 test "udp_input_checksum_error_step bumps chkerr and drop" {
-    var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
+    var stats: UipStats = make_zero_stats();
     var rt: UipRuntime = make_runtime();
     uip_runtime_init(&rt);
     rt.stats = &stats;

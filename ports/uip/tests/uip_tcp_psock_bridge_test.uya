@@ -191,8 +191,26 @@ fn make_runtime() UipRuntime {
     return rt;
 }
 
+fn make_zero_stats() UipStats {
+    return UipStats {
+        ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 }
+    };
+}
+
 fn make_state() UipState {
-    return UipState { listener_ports: [0u16: 10], conns: [UipConn { ripaddr: [0u16,0u16], lport: 0u16, rport: 0u16, rcv_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], snd_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], len: 0u16, mss: 0u16, initialmss: 0u16, sa: 0 as byte, sv: 0 as byte, rto: 0 as byte, tcpstateflags: 0 as byte, timer: 0 as byte, nrtx: 0 as byte, appstate: 0u16 }: 10], udp_conns: [UipUdpConn { ripaddr: [0u16,0u16], lport: 0u16, rport: 0u16, ttl: 0 as byte, appstate: 0u16 }: 10], hostaddr: UipIpAddr { words: [0u16,0u16] }, stats: UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } }, iss: [0 as byte,0 as byte,0 as byte,0 as byte], lastport: 0u16 };
+    var state: UipState = UipState {
+        conns: [UipConn { ripaddr: [0u16,0u16], lport: 0u16, rport: 0u16, rcv_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], snd_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], len: 0u16, mss: 0u16, initialmss: 0u16, sa: 0 as byte, sv: 0 as byte, rto: 0 as byte, tcpstateflags: 0 as byte, timer: 0 as byte, nrtx: 0 as byte, appstate: 0u16 }: 10],
+        listener_ports: [0u16: 10],
+        udp_conns: [UipUdpConn { ripaddr: [0u16,0u16], lport: 0u16, rport: 0u16, ttl: 0 as byte, appstate: 0u16 }: 10],
+        hostaddr: UipIpAddr { words: [0u16,0u16] },
+        stats: make_zero_stats(),
+        iss: [0 as byte,0 as byte,0 as byte,0 as byte],
+        lastport: 0u16
+    };
+    return state;
 }
 
 fn make_psock(storage: &byte, size: usize) Psock {

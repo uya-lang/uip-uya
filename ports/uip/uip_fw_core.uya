@@ -1,23 +1,24 @@
 // Forwarding / neighbor / split split from uiplib.uya.
 
+export const UIP_FW_LOCAL: i32 = 0;
 export const UIP_FW_OK: i32 = 0;
-export const UIP_FW_DROPPED: i32 = 1;
-export const UIP_FW_FORWARDED: i32 = 2;
-export const UIP_FW_LOCAL: i32 = 3;
-export const UIP_FW_ZEROLEN: i32 = 4;
-export const UIP_FW_NOROUTE: i32 = 5;
+export const UIP_FW_FORWARDED: i32 = 1;
+export const UIP_FW_ZEROLEN: i32 = 2;
+export const UIP_FW_TOOLARGE: i32 = 3;
+export const UIP_FW_NOROUTE: i32 = 4;
+export const UIP_FW_DROPPED: i32 = 5;
 
-export struct UipRuntime { frame: UipFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, urgdata: &byte, len: u16, slen: u16, urglen: u16, surglen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, acc32: [byte: 4], ipid: u16, iss: [byte: 4], logcode: byte, logparam: u16, stats: &UipStats, te_reply: bool }
+export struct UipRuntime { frame: UipFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, urgdata: &byte, len: u16, slen: u16, urglen: u16, surglen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, acc32: [byte: 4], ipid: u16, iss: [byte: 4], logcode: byte, logparam: u16, stats: &UipStats, te_reply: bool, fw_last_output_fn: i32 }
 export struct UipNeighborAddr { addr: UipEthAddr }
 export struct UipNeighborEntry { ipaddr: UipIpAddr, addr: UipNeighborAddr, time: byte }
 // Legacy duplicate neighbor-cache declarations retained for fw compatibility.
 // Canonical source of truth is ports/uip/uip_neighbor_lib.uya.
 export struct UipNeighborState { entries: [UipNeighborEntry: 8] }
 // Canonical forwarding implementation for the project lives in this file.
-export struct UipFwNetif { ipaddr: UipIpAddr, netmask: UipIpAddr, output_result: byte, output_calls: byte, last_len: u16 }
+export struct UipFwNetif { next: &UipFwNetif, ipaddr: UipIpAddr, netmask: UipIpAddr, output_result: byte, output_calls: byte, last_len: u16, output_fn: i32 }
 export struct UipFwCacheEntry { timer: u16, srcipaddr: UipIpAddr, destipaddr: UipIpAddr, ipid: u16, proto: byte }
-export struct UipFwState { netifs: [&UipFwNetif: 4], netif_count: usize, default_index: i32, cache: [UipFwCacheEntry: 2] }
-export struct UipSplitTrace { calls: byte, sent_len0: u16, sent_len1: u16, seq0: [byte: 4], seq1: [byte: 4] }
+export struct UipFwState { netifs: [&UipFwNetif: 4], netif_count: usize, default_index: i32, cache: [UipFwCacheEntry: 2], head: &UipFwNetif, default_netif: &UipFwNetif }
+export struct UipSplitTrace { calls: byte, sent_len0: u16, sent_len1: u16, seq0: [byte: 4], seq1: [byte: 4], len_field0: u16, len_field1: u16, tcpchksum0: u16, tcpchksum1: u16, ipchksum0: u16, ipchksum1: u16 }
 
 fn fw_match_netif(hdr: &EthIpHdr, netif: &UipFwNetif) bool {
     return uip_ipaddr_maskcmp(&UipIpAddr { words: [hdr.destipaddr[0], hdr.destipaddr[1]] }, &netif.ipaddr, &netif.netmask);
@@ -208,9 +209,117 @@ export fn uip_neighbor_lookup(state: &UipNeighborState, ipaddr: &UipIpAddr, out:
     return false;
 }
 
+fn fw_chain_contains(netif: &UipFwNetif, target: &UipFwNetif) bool {
+    var current: &UipFwNetif = netif;
+    while current != null {
+        if current == target {
+            return true;
+        }
+        current = current.next;
+    }
+    return false;
+}
+
+fn fw_chain_length(head: &UipFwNetif) usize {
+    var count: usize = 0usize;
+    var current: &UipFwNetif = head;
+    while current != null {
+        count = count + 1usize;
+        current = current.next;
+    }
+    return count;
+}
+
+fn fw_sync_registry_from_chain(state: &UipFwState) void {
+    var i: usize = 0usize;
+    while i < @len(state.netifs) {
+        state.netifs[i] = null;
+        i = i + 1usize;
+    }
+    state.netif_count = 0usize;
+    var current: &UipFwNetif = state.head;
+    while current != null && state.netif_count < @len(state.netifs) {
+        state.netifs[state.netif_count] = current;
+        state.netif_count = state.netif_count + 1usize;
+        current = current.next;
+    }
+}
+
+fn fw_find_registered_index(state: &UipFwState, netif: &UipFwNetif) i32 {
+    var i: usize = 0usize;
+    while i < state.netif_count {
+        if state.netifs[i] == netif {
+            return (i as! i32).value;
+        }
+        i = i + 1usize;
+    }
+    return -1;
+}
+
+fn fw_find_match_by_chain(state: &UipFwState, hdr: &EthIpHdr) &UipFwNetif {
+    var current: &UipFwNetif = state.head;
+    while current != null {
+        if fw_match_netif(hdr, current) {
+            return current;
+        }
+        current = current.next;
+    }
+    return state.default_netif;
+}
+
+fn fw_netif_is_in_chain(state: &UipFwState, netif: &UipFwNetif) bool {
+    var current: &UipFwNetif = state.head;
+    while current != null {
+        if current == netif {
+            return true;
+        }
+        current = current.next;
+    }
+    return false;
+}
+
+fn fw_broadcast_send_chain(state: &UipFwState, rt: &UipRuntime) bool {
+    var sent: bool = false;
+    if state.default_netif != null {
+        _ = fw_netif_send(state.default_netif, rt);
+        sent = true;
+    }
+    var current: &UipFwNetif = state.head;
+    while current != null {
+        if current != state.default_netif {
+            _ = fw_netif_send(current, rt);
+            sent = true;
+        }
+        current = current.next;
+    }
+    return sent;
+}
+
+fn fw_output_dispatch(netif: &UipFwNetif, rt: &UipRuntime) byte {
+    rt.fw_last_output_fn = netif.output_fn;
+    if netif.output_fn == 1 {
+        return UIP_FW_OK as byte;
+    }
+    if netif.output_fn == 2 {
+        return UIP_FW_FORWARDED as byte;
+    }
+    if netif.output_fn == 3 {
+        return UIP_FW_DROPPED as byte;
+    }
+    return netif.output_result;
+}
+
+fn fw_netif_send(netif: &UipFwNetif, rt: &UipRuntime) byte {
+    netif.last_len = rt.len;
+    netif.output_calls = netif.output_calls + (1 as byte);
+    return fw_output_dispatch(netif, rt);
+}
+
 export fn uip_fw_init(state: &UipFwState) void {
     state.netif_count = 0;
     state.default_index = -1;
+    state.head = null;
+    state.default_netif = null;
     var i: usize = 0;
     while i < @len(state.cache) {
         state.cache[i].timer = 0u16;
@@ -219,82 +328,65 @@ export fn uip_fw_init(state: &UipFwState) void {
 }
 
 export fn uip_fw_register(state: &UipFwState, netif: &UipFwNetif) void {
-    if state.netif_count < @len(state.netifs) {
-        state.netifs[state.netif_count] = netif;
-        state.netif_count = state.netif_count + 1;
+    if state.head == null {
+        state.head = netif;
+    } else if !fw_chain_contains(state.head, netif) {
+        netif.next = state.head;
+        state.head = netif;
+    } else {
+        state.head = netif;
+    }
+    fw_sync_registry_from_chain(state);
+    if state.default_netif != null {
+        state.default_index = fw_find_registered_index(state, state.default_netif);
     }
 }
 
 export fn uip_fw_default(state: &UipFwState, netif: &UipFwNetif) void {
-    var i: usize = 0;
-    while i < state.netif_count {
-        if state.netifs[i] == netif {
-            state.default_index = (i as! i32).value;
-            return;
-        }
-        i = i + 1;
+    state.default_netif = netif;
+    if state.head == null {
+        state.head = netif;
+        fw_sync_registry_from_chain(state);
     }
+    state.default_index = fw_find_registered_index(state, netif);
 }
 
 export fn uip_fw_output(state: &UipFwState, rt: &UipRuntime) byte {
     if rt.len == 0u16 {
         return UIP_FW_ZEROLEN as byte;
     }
+    const ipid: u16 = fw_ipid_from_hdr(&rt.frame.ethip);
+    var slot: usize = 0;
+    var oldest: u16 = 20u16;
+    var found_empty: bool = false;
+    var c: usize = 0;
+    while c < @len(state.cache) {
+        if state.cache[c].timer == 0u16 {
+            slot = c;
+            found_empty = true;
+            break;
+        }
+        if state.cache[c].timer <= oldest {
+            oldest = state.cache[c].timer;
+            slot = c;
+        }
+        c = c + 1usize;
+    }
+    state.cache[slot].timer = 20u16;
+    state.cache[slot].ipid = ipid;
+    state.cache[slot].proto = rt.frame.ethip.proto;
+    state.cache[slot].srcipaddr = UipIpAddr { words: [rt.frame.ethip.srcipaddr[0], rt.frame.ethip.srcipaddr[1]] };
+    state.cache[slot].destipaddr = UipIpAddr { words: [rt.frame.ethip.destipaddr[0], rt.frame.ethip.destipaddr[1]] };
+    _ = found_empty;
     if rt.frame.ethip.destipaddr[0] == 0xffffu16 && rt.frame.ethip.destipaddr[1] == 0xffffu16 {
-        var sent: bool = false;
-        if state.default_index >= 0 {
-            const index: usize = (state.default_index as! usize).value;
-            if index < state.netif_count && index < @len(state.netifs) {
-                const netif: &UipFwNetif = state.netifs[index];
-                if netif != null {
-                    netif.last_len = rt.len;
-                    netif.last_len = rt.len;
-                    netif.output_calls = netif.output_calls + (1 as byte);
-                    sent = true;
-                }
-            }
-        }
-        var i: usize = 0;
-        while i < state.netif_count {
-            const netif: &UipFwNetif = state.netifs[i];
-            if netif != null {
-                var is_default: bool = false;
-                if state.default_index >= 0 {
-                    is_default = i == ((state.default_index as! usize).value);
-                }
-                if !is_default {
-                    netif.last_len = rt.len;
-                    netif.output_calls = netif.output_calls + (1 as byte);
-                    sent = true;
-                }
-            }
-            i = i + 1;
-        }
-        if sent {
+        if fw_broadcast_send_chain(state, rt) {
             return UIP_FW_OK as byte;
         }
         return UIP_FW_NOROUTE as byte;
     }
-    var i: usize = 0;
-    while i < state.netif_count {
-        const netif: &UipFwNetif = state.netifs[i];
-        if netif != null && fw_match_netif(&rt.frame.ethip, netif) {
-            netif.last_len = rt.len;
-            netif.output_calls = netif.output_calls + (1 as byte);
-            return netif.output_result;
-        }
-        i = i + 1;
-    }
-    if state.default_index >= 0 {
-        const index: usize = (state.default_index as! usize).value;
-        if index < state.netif_count && index < @len(state.netifs) {
-            const netif: &UipFwNetif = state.netifs[index];
-            if netif != null {
-                netif.last_len = rt.len;
-                netif.output_calls = netif.output_calls + (1 as byte);
-                return netif.output_result;
-            }
-        }
+    const selected: &UipFwNetif = fw_find_match_by_chain(state, &rt.frame.ethip);
+    if selected != null {
+        return fw_netif_send(selected, rt);
     }
     return UIP_FW_NOROUTE as byte;
 }
@@ -410,6 +502,9 @@ export fn uip_split_output(rt: &UipRuntime, fw: &UipFwState, trace: &UipSplitTra
         trace.seq0[1] = rt.frame.ethtcp.seqno[1];
         trace.seq0[2] = rt.frame.ethtcp.seqno[2];
         trace.seq0[3] = rt.frame.ethtcp.seqno[3];
+        trace.tcpchksum0 = rt.frame.ethtcp.tcpchksum;
+        trace.ipchksum0 = rt.frame.ethtcp.ipchksum;
+        trace.len_field0 = (((rt.frame.ethtcp.len[0] as u16) << 8) | (rt.frame.ethtcp.len[1] as u16));
         const first_result: byte = uip_fw_output(fw, rt);
         if first_result != (UIP_FW_OK as! byte).value {
             return first_result;
@@ -442,7 +537,13 @@ export fn uip_split_output(rt: &UipRuntime, fw: &UipFwState, trace: &UipSplitTra
         trace.seq1[1] = rt.frame.ethtcp.seqno[1];
         trace.seq1[2] = rt.frame.ethtcp.seqno[2];
         trace.seq1[3] = rt.frame.ethtcp.seqno[3];
-        return uip_fw_output(fw, rt);
+        trace.tcpchksum1 = rt.frame.ethtcp.tcpchksum;
+        trace.ipchksum1 = rt.frame.ethtcp.ipchksum;
+        trace.len_field1 = (((rt.frame.ethtcp.len[0] as u16) << 8) | (rt.frame.ethtcp.len[1] as u16));
+        trace.tcpchksum0 = 0u16;
+    trace.ipchksum0 = 0u16;
+    trace.len_field0 = (((rt.frame.ethtcp.len[0] as u16) << 8) | (rt.frame.ethtcp.len[1] as u16));
+    return uip_fw_output(fw, rt);
     }
     trace.calls = 1 as byte;
     trace.sent_len0 = rt.len;

@@ -127,7 +127,7 @@ test "psock_init wires buffer and clears lengths" {
     try assert_eq_i32(ps.bufsize as i32, 8);
 }
 
-test "psock_newdata with exhausted read state blocks until next data like original psock" {
+test "psock_newdata does not treat buffered bytes alone as fresh event data" {
     var storage: [byte: 4] = [0: 4];
     var ps: Psock = Psock {
         pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false },
@@ -136,10 +136,13 @@ test "psock_newdata with exhausted read state blocks until next data like origin
         buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16
     };
     psock_init(&ps, &storage[0], 4);
-    ps.state = (PSOCK_STATE_READ as! byte).value;
+    storage[0] = 65 as byte;
+    storage[1] = 66 as byte;
+    ps.buf.left = 2u16;
+    try assert_eq_i32(psock_datalen(&ps) as i32, 2);
     try assert_eq_bool(psock_newdata(&ps), false);
-    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_NEWDATA);
 }
+
 
 test "psock_send acked state continues with remaining payload instead of restarting" {
     var storage: [byte: 8] = [0: 8];
@@ -253,6 +256,16 @@ test "psock_generator_send ack plus rexmit should prefer retransmit and preserve
     try assert_eq_i32(ps.sendlen as i32, 6);
     try assert_eq_i32(ps.lastlen as i32, 4);
     try assert_eq_i32(@usize_from_ptr(ps.sendptr as &void) as i32, @usize_from_ptr(ps.bufptr as &void) as i32);
+}
+
+test "psock_apply_event zero-length newdata blocks instead of staying in read state" {
+    var storage: [byte: 8] = [0: 8];
+    var ps: Psock = Psock { pt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, psockpt: Pt { lc: 0u16, yielded: false, waiting: false, exit_requested: false, restart_requested: false, spawned: false }, sendptr: null, readptr: null, bufptr: null, sendlen: 0u16, readlen: 0u16, event_readlen: 0u16, buf: PsockBuf { ptr: null, left: 0u16 }, bufsize: 0, state: 0 as byte, lastlen: 0u16 };
+    psock_init(&ps, &storage[0], 8);
+    ps.state = (PSOCK_STATE_READ as! byte).value;
+    var ev: PsockEvent = PsockEvent { acked: false, newdata: true, rexmit: false, closed: false, polled: false, timed_out: false, aborted: false, connected: false, data_len: 0u16, send_len: 0u16 };
+    psock_apply_event(&ps, &ev);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_NEWDATA);
 }
 
 test "psock_apply_event ack preserves pending send until send path consumes ack" {
@@ -422,8 +435,8 @@ test "psock_readto without marker remains waiting with retained unread data" {
     try assert_eq_i32(ps.lastlen as i32, 4);
     try assert_eq_i32(ps.readlen as i32, 0);
     try assert_eq_i32(ps.state as i32, PSOCK_STATE_READ);
-    try assert_eq_bool(psock_newdata(&ps), true);
-    try assert_eq_i32(ps.state as i32, PSOCK_STATE_READ);
+    try assert_eq_bool(psock_newdata(&ps), false);
+    try assert_eq_i32(ps.state as i32, PSOCK_STATE_BLOCKED_NEWDATA);
 }
 
 
@@ -533,7 +546,7 @@ test "psock_readbuf resumed callback should leave completed buffer visible when 
     try assert_eq_i32(psock_readbuf(&ps, &input2[0], 3u16) as i32, PT_ENDED);
     try assert_eq_i32(ps.state as i32, 0);
     try assert_eq_i32(ps.readlen as i32, 0);
-    try assert_eq_bool(psock_newdata(&ps), true);
+    try assert_eq_bool(psock_newdata(&ps), false);
 }
 
 test "psock_readto resumes across callbacks and ends when marker arrives later" {

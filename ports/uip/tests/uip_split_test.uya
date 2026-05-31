@@ -9,6 +9,7 @@ extern const UIP_BUFSIZE: i32;
 extern const UIP_LLH_LEN: i32;
 extern const UIP_TCPIP_HLEN: i32;
 extern const UIP_FW_OK: i32;
+extern const UIP_FW_TOOLARGE: i32;
 
 struct UipIpAddr { words: [u16: 2] }
 struct UipStatsBlock { drop: u16, recv: u16, sent: u16, a: u16, b: u16, c: u16, d: u16, e: u16, f: u16 }
@@ -26,14 +27,23 @@ struct EthTcpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid
 struct EthUdpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, udplen: u16, udpchksum: u16 }
 struct ArpHdr { ethhdr: UipEthHdr, hwtype: u16, protocol: u16, hwlen: byte, protolen: byte, opcode: u16, shwaddr: UipEthAddr, sipaddr: [u16: 2], dhwaddr: UipEthAddr, dipaddr: [u16: 2] }
 struct UipRuntimeFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
-struct UipRuntime { frame: UipRuntimeFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, urgdata: &byte, len: u16, uip_len: u16, uip_slen: u16, slen: u16, urglen: u16, surglen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, payload_view: &byte, payload_len: u16, input_view: &byte, input_len: u16, app_input: &byte, app_input_len: u16, app_output: &byte, logbuf: [UipRuntimeLog: 16], logcount: usize, logcode: byte, logparam: u16, logs: [UipRuntimeLog: 16], ipid: u16, acc32: [byte: 4], stats: &UipStats, te_reply: bool }
-struct UipFwNetif { ipaddr: UipIpAddr, netmask: UipIpAddr, output_result: byte, output_calls: byte, last_len: u16 }
+struct UipRuntime { frame: UipRuntimeFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, urgdata: &byte, len: u16, uip_len: u16, uip_slen: u16, slen: u16, urglen: u16, surglen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, payload_view: &byte, payload_len: u16, input_view: &byte, input_len: u16, app_input: &byte, app_input_len: u16, app_output: &byte, logbuf: [UipRuntimeLog: 16], logcount: usize, logcode: byte, logparam: u16, logs: [UipRuntimeLog: 16], ipid: u16, acc32: [byte: 4], stats: &UipStats, te_reply: bool, fw_last_output_fn: i32 }
+struct UipFwNetif { next: &UipFwNetif, ipaddr: UipIpAddr, netmask: UipIpAddr, output_result: byte, output_calls: byte, last_len: u16, output_fn: i32 }
 struct UipFwCacheEntry { timer: u16, srcipaddr: UipIpAddr, destipaddr: UipIpAddr, ipid: u16, proto: byte }
-struct UipFwState { netifs: [&UipFwNetif: 4], netif_count: usize, default_index: i32, cache: [UipFwCacheEntry: 2] }
-struct UipSplitTrace { calls: byte, sent_len0: u16, sent_len1: u16, seq0: [byte: 4], seq1: [byte: 4] }
+struct UipFwState { netifs: [&UipFwNetif: 4], netif_count: usize, default_index: i32, cache: [UipFwCacheEntry: 2], head: &UipFwNetif, default_netif: &UipFwNetif }
+struct UipSplitTrace { calls: byte, sent_len0: u16, sent_len1: u16, seq0: [byte: 4], seq1: [byte: 4], len_field0: u16, len_field1: u16, tcpchksum0: u16, tcpchksum1: u16, ipchksum0: u16, ipchksum1: u16 }
+
+fn make_zero_stats() UipStats {
+    return UipStats {
+        ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 }
+    };
+}
 
 fn make_runtime() UipRuntime {
-    var stats: UipStats = UipStats { ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 }, udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 } };
+    var stats: UipStats = make_zero_stats();
     return UipRuntime {
         frame: UipRuntimeFrame {
             ethip: EthIpHdr { ethhdr: UipEthHdr { dest: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, src: UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }, type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16] },
@@ -71,7 +81,8 @@ fn make_runtime() UipRuntime {
         ipid: 0u16,
         acc32: [0 as byte,0 as byte,0 as byte,0 as byte],
         stats: &stats,
-        te_reply: false
+        te_reply: false,
+        fw_last_output_fn: 0
     };
 }
 
@@ -80,7 +91,9 @@ fn make_fw(netif: &UipFwNetif) UipFwState {
         netifs: [null: 4],
         netif_count: 1,
         default_index: 0,
-        cache: [UipFwCacheEntry { timer: 0u16, srcipaddr: UipIpAddr { words: [0u16,0u16] }, destipaddr: UipIpAddr { words: [0u16,0u16] }, ipid: 0u16, proto: 0 as byte }: 2]
+        cache: [UipFwCacheEntry { timer: 0u16, srcipaddr: UipIpAddr { words: [0u16,0u16] }, destipaddr: UipIpAddr { words: [0u16,0u16] }, ipid: 0u16, proto: 0 as byte }: 2],
+        head: netif,
+        default_netif: netif
     };
     state.netifs[0] = netif;
     return state;
@@ -88,9 +101,9 @@ fn make_fw(netif: &UipFwNetif) UipFwState {
 
 test "uip_split_output leaves non max segment untouched" {
     var rt: UipRuntime = make_runtime();
-    var netif: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value, output_calls: 0 as byte, last_len: 0u16 };
+    var netif: UipFwNetif = UipFwNetif { next: null, ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value, output_calls: 0 as byte, last_len: 0u16, output_fn: 0 };
     var fw: UipFwState = make_fw(&netif);
-    var trace: UipSplitTrace = UipSplitTrace { calls: 0 as byte, sent_len0: 0u16, sent_len1: 0u16, seq0: [0 as byte,0 as byte,0 as byte,0 as byte], seq1: [0 as byte,0 as byte,0 as byte,0 as byte] };
+    var trace: UipSplitTrace = UipSplitTrace { calls: 0 as byte, sent_len0: 0u16, sent_len1: 0u16, seq0: [0 as byte,0 as byte,0 as byte,0 as byte], seq1: [0 as byte,0 as byte,0 as byte,0 as byte], len_field0: 0u16, len_field1: 0u16, tcpchksum0: 0u16, tcpchksum1: 0u16, ipchksum0: 0u16, ipchksum1: 0u16 };
     rt.len = 100u16;
     rt.frame.ethtcp.proto = (UIP_PROTO_TCP as! byte).value;
     const result: byte = uip_split_output(&rt, &fw, &trace);
@@ -102,9 +115,9 @@ test "uip_split_output leaves non max segment untouched" {
 
 test "uip_split_output nonmax frame sends once without mutating sequence" {
     var rt: UipRuntime = make_runtime();
-    var netif: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value, output_calls: 0 as byte, last_len: 0u16 };
+    var netif: UipFwNetif = UipFwNetif { next: null, ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value, output_calls: 0 as byte, last_len: 0u16, output_fn: 0 };
     var fw: UipFwState = make_fw(&netif);
-    var trace: UipSplitTrace = UipSplitTrace { calls: 0 as byte, sent_len0: 0u16, sent_len1: 0u16, seq0: [0 as byte,0 as byte,0 as byte,0 as byte], seq1: [0 as byte,0 as byte,0 as byte,0 as byte] };
+    var trace: UipSplitTrace = UipSplitTrace { calls: 0 as byte, sent_len0: 0u16, sent_len1: 0u16, seq0: [0 as byte,0 as byte,0 as byte,0 as byte], seq1: [0 as byte,0 as byte,0 as byte,0 as byte], len_field0: 0u16, len_field1: 0u16, tcpchksum0: 0u16, tcpchksum1: 0u16, ipchksum0: 0u16, ipchksum1: 0u16 };
     rt.len = 120u16;
     rt.frame.ethtcp.proto = (UIP_PROTO_TCP as! byte).value;
     rt.frame.ethtcp.seqno[3] = 9 as byte;
@@ -118,9 +131,9 @@ test "uip_split_output nonmax frame sends once without mutating sequence" {
 
 test "uip_split_output max segment sends two packet lengths to output callbacks" {
     var rt: UipRuntime = make_runtime();
-    var netif: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value, output_calls: 0 as byte, last_len: 0u16 };
+    var netif: UipFwNetif = UipFwNetif { next: null, ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value, output_calls: 0 as byte, last_len: 0u16, output_fn: 0 };
     var fw: UipFwState = make_fw(&netif);
-    var trace: UipSplitTrace = UipSplitTrace { calls: 0 as byte, sent_len0: 0u16, sent_len1: 0u16, seq0: [0 as byte,0 as byte,0 as byte,0 as byte], seq1: [0 as byte,0 as byte,0 as byte,0 as byte] };
+    var trace: UipSplitTrace = UipSplitTrace { calls: 0 as byte, sent_len0: 0u16, sent_len1: 0u16, seq0: [0 as byte,0 as byte,0 as byte,0 as byte], seq1: [0 as byte,0 as byte,0 as byte,0 as byte], len_field0: 0u16, len_field1: 0u16, tcpchksum0: 0u16, tcpchksum1: 0u16, ipchksum0: 0u16, ipchksum1: 0u16 };
     rt.len = ((UIP_BUFSIZE - UIP_LLH_LEN) as! u16).value;
     rt.frame.ethtcp.proto = (UIP_PROTO_TCP as! byte).value;
     rt.frame.ethtcp.seqno[0] = 0 as byte;
@@ -148,11 +161,31 @@ test "uip_split_output max segment sends two packet lengths to output callbacks"
     try assert_eq_bool(rt.frame.ethtcp.ipchksum != 0u16, true);
 }
 
+test "uip_split_output max segment updates header length fields and checksums per half" {
+    var rt: UipRuntime = make_runtime();
+    var netif: UipFwNetif = UipFwNetif { next: null, ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value, output_calls: 0 as byte, last_len: 0u16, output_fn: 0 };
+    var fw: UipFwState = make_fw(&netif);
+    var trace: UipSplitTrace = UipSplitTrace { calls: 0 as byte, sent_len0: 0u16, sent_len1: 0u16, seq0: [0 as byte,0 as byte,0 as byte,0 as byte], seq1: [0 as byte,0 as byte,0 as byte,0 as byte], len_field0: 0u16, len_field1: 0u16, tcpchksum0: 0u16, tcpchksum1: 0u16, ipchksum0: 0u16, ipchksum1: 0u16 };
+    rt.len = ((UIP_BUFSIZE - UIP_LLH_LEN) as! u16).value;
+    rt.frame.ethtcp.proto = (UIP_PROTO_TCP as! byte).value;
+    rt.frame.ethtcp.srcipaddr[0] = uip_ipaddr(10,0,0,2).words[0];
+    rt.frame.ethtcp.srcipaddr[1] = uip_ipaddr(10,0,0,2).words[1];
+    rt.frame.ethtcp.destipaddr[0] = uip_ipaddr(10,0,0,9).words[0];
+    rt.frame.ethtcp.destipaddr[1] = uip_ipaddr(10,0,0,9).words[1];
+    var payload: [byte: 366] = [0 as byte: 366];
+    rt.appdata = &payload[0];
+    try assert_eq_i32(uip_split_output(&rt, &fw, &trace) as i32, UIP_FW_OK);
+    try assert_eq_i32(trace.len_field0 as i32, trace.sent_len0 as i32);
+    try assert_eq_i32(trace.len_field1 as i32, trace.sent_len1 as i32);
+    try assert_eq_bool(trace.tcpchksum1 != 0u16, true);
+    try assert_eq_bool(trace.tcpchksum1 != 0u16, true);
+}
+
 test "uip_split_output moves second half into appdata before second send" {
     var rt: UipRuntime = make_runtime();
-    var netif: UipFwNetif = UipFwNetif { ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value, output_calls: 0 as byte, last_len: 0u16 };
+    var netif: UipFwNetif = UipFwNetif { next: null, ipaddr: uip_ipaddr(10,0,0,1), netmask: uip_ipaddr(255,0,0,0), output_result: (UIP_FW_OK as! byte).value, output_calls: 0 as byte, last_len: 0u16, output_fn: 0 };
     var fw: UipFwState = make_fw(&netif);
-    var trace: UipSplitTrace = UipSplitTrace { calls: 0 as byte, sent_len0: 0u16, sent_len1: 0u16, seq0: [0 as byte,0 as byte,0 as byte,0 as byte], seq1: [0 as byte,0 as byte,0 as byte,0 as byte] };
+    var trace: UipSplitTrace = UipSplitTrace { calls: 0 as byte, sent_len0: 0u16, sent_len1: 0u16, seq0: [0 as byte,0 as byte,0 as byte,0 as byte], seq1: [0 as byte,0 as byte,0 as byte,0 as byte], len_field0: 0u16, len_field1: 0u16, tcpchksum0: 0u16, tcpchksum1: 0u16, ipchksum0: 0u16, ipchksum1: 0u16 };
     rt.len = ((UIP_BUFSIZE - UIP_LLH_LEN) as! u16).value;
     rt.frame.ethtcp.proto = (UIP_PROTO_TCP as! byte).value;
     var payload: [byte: 366] = [0 as byte: 366];

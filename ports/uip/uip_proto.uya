@@ -253,7 +253,7 @@ export fn psock_newdata(psock: &Psock) bool {
     if psock.readlen > 0u16 {
         return true;
     }
-    if psock_datalen(psock) > 0u16 {
+    if psock.event_readlen > 0u16 {
         return true;
     }
     if psock.state == (PSOCK_STATE_READ as! byte).value {

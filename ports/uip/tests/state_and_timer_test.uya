@@ -110,7 +110,7 @@ test "timer_restart uses current time" {
 
 test "uip_init clears listen ports and closes all tcp conns" {
     var state: UipState = UipState {
-        listener_ports: [0u16: 10],
+        listener_ports: [0u16: 20],
         conns: [UipConn {
             ripaddr: [0u16, 0u16],
             lport: 0u16,
@@ -159,7 +159,7 @@ test "uip_init clears listen ports and closes all tcp conns" {
 
 test "uip_init clears active UDP remote endpoints and TTL state" {
     var state: UipState = UipState {
-        listener_ports: [0u16: 10],
+        listener_ports: [0u16: 20],
         conns: [UipConn {
             ripaddr: [0u16, 0u16], lport: 0u16, rport: 0u16,
             rcv_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte], snd_nxt: [0 as byte, 0 as byte, 0 as byte, 0 as byte],
@@ -184,7 +184,7 @@ test "uip_init clears active UDP remote endpoints and TTL state" {
 
 test "uip_conn_active and uip_outstanding reflect connection state" {
     var state: UipState = UipState {
-        listener_ports: [0u16: 10],
+        listener_ports: [0u16: 20],
         conns: [UipConn {
             ripaddr: [0u16, 0u16],
             lport: 0u16,
@@ -237,7 +237,7 @@ test "uip_udp_bind and remove update local port" {
 
 test "uip_connect allocates closed slot and initializes syn state" {
     var state: UipState = UipState {
-        listener_ports: [0u16: 10],
+        listener_ports: [0u16: 20],
         conns: [UipConn {
             ripaddr: [0u16, 0u16],
             lport: 0u16,
@@ -289,7 +289,7 @@ test "uip_connect allocates closed slot and initializes syn state" {
 
 test "uip_connect reuses oldest time wait when no closed slot exists" {
     var state: UipState = UipState {
-        listener_ports: [0u16: 10],
+        listener_ports: [0u16: 20],
         conns: [UipConn {
             ripaddr: [0u16, 0u16],
             lport: 0u16,
@@ -339,7 +339,7 @@ test "uip_connect reuses oldest time wait when no closed slot exists" {
 
 test "uip_udp_new allocates slot and fills ttl" {
     var state: UipState = UipState {
-        listener_ports: [0u16: 10],
+        listener_ports: [0u16: 20],
         conns: [UipConn {
             ripaddr: [0u16, 0u16],
             lport: 0u16,
