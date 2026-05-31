@@ -1,0 +1,238 @@
+use std.testing;
+
+extern fn uip_init(state: &UipState) void;
+extern fn uip_runtime_init(rt: &UipRuntime) void;
+extern fn uip_sethostaddr(rt: &UipRuntime, addr: &UipIpAddr) void;
+extern fn uip_setdraddr(rt: &UipRuntime, addr: &UipIpAddr) void;
+extern fn uip_setnetmask(rt: &UipRuntime, addr: &UipIpAddr) void;
+extern fn uip_input(state: &UipState, rt: &UipRuntime, conn_index: i32, incoming_len: u16, has_ack: bool, has_fin: bool, app_slen: u16) UipProcessResult;
+extern fn uip_periodic(state: &UipState, rt: &UipRuntime, conn_index: i32) UipProcessResult;
+extern fn uip_arp_init(state: &UipArpState) void;
+extern fn uip_arp_ipin(state: &UipArpState, buf: &EthIpHdr, len: &u16) void;
+extern fn uip_arp_arpin(state: &UipArpState, buf: &ArpHdr, len: &u16) void;
+extern fn uip_arp_out(state: &UipArpState, frame: &UipFrame, len: &u16) void;
+extern fn uip_arp_timer(state: &UipArpState) void;
+extern fn timer_set(t: &Timer, interval: u64, now: u64) void;
+extern fn timer_reset(t: &Timer) void;
+extern fn timer_expired(t: &Timer, now: u64) bool;
+extern fn uip_ipaddr(a: byte, b: byte, c: byte, d: byte) UipIpAddr;
+extern fn htons(val: u16) u16;
+
+extern const UIP_CONNS: i32;
+extern const UIP_ETHTYPE_IP: i32;
+extern const UIP_ETHTYPE_ARP: i32;
+
+const CLOCK_SECOND: u64 = 1000u64;
+
+struct UipRuntimeFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
+struct UipRuntime { frame: UipRuntimeFrame, appdata: &byte, sappdata: &byte, len: u16, uip_len: u16, uip_slen: u16, flags: byte, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, stats: &UipStats, urgdata: &byte, urglen: u16, surglen: u16, logbuf: [UipRuntimeLog: 16], logcount: usize, logcode: byte, logparam: u16, current_conn: i32, current_udp_conn: i32, payload_view: &byte, payload_len: u16, input_view: &byte, input_len: u16, app_input: &byte, app_input_len: u16, app_output: &byte, slen: u16, logs: [UipRuntimeLog: 16], ipid: u16, te_reply: bool }
+struct UipProcessResult { flags: byte, len: u16, poll: bool, timed_out: bool, retransmit: bool, appcall: bool, closed: bool, logged: bool, urgdata: bool }
+struct UipRuntimeLog { code: byte, arg0: u16, arg1: u16 }
+struct UipIpAddr { words: [u16: 2] }
+struct UipEthAddr { addr: [byte: 6] }
+struct UipEthHdr { dest: UipEthAddr, src: UipEthAddr, type: u16 }
+struct ArpHdr { ethhdr: UipEthHdr, hwtype: u16, protocol: u16, hwlen: byte, protolen: byte, opcode: u16, shwaddr: UipEthAddr, sipaddr: [u16: 2], dhwaddr: UipEthAddr, dipaddr: [u16: 2] }
+struct EthIpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2] }
+struct EthTcpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, seqno: [byte: 4], ackno: [byte: 4], tcpoffset: byte, flags: byte, wnd: [byte: 2], tcpchksum: u16, urgp: u16, optdata: [byte: 4] }
+struct EthUdpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, udplen: u16, udpchksum: u16 }
+struct UipFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
+struct UipStatsBlock { drop: u16, recv: u16, sent: u16, a: u16, b: u16, c: u16, d: u16, e: u16, f: u16 }
+struct UipStatsUdpBlock { drop: u16, recv: u16, sent: u16, chkerr: u16 }
+struct UipStats { ip: UipStatsBlock, icmp: UipStatsBlock, tcp: UipStatsBlock, udp: UipStatsUdpBlock }
+struct UipConn { ripaddr: [u16: 2], lport: u16, rport: u16, rcv_nxt: [byte: 4], snd_nxt: [byte: 4], len: u16, mss: u16, initialmss: u16, sa: byte, sv: byte, rto: byte, tcpstateflags: byte, timer: byte, nrtx: byte, appstate: u16 }
+struct UipUdpConn { ripaddr: [u16: 2], lport: u16, rport: u16, ttl: byte, appstate: u16 }
+struct UipState { conns: [UipConn: 10], listener_ports: [u16: 10], udp_conns: [UipUdpConn: 10], hostaddr: UipIpAddr, stats: UipStats, iss: [byte: 4], lastport: u16 }
+struct Timer { start: u64, interval: u64 }
+struct UipArpState { ethaddr: UipEthAddr, hostaddr: UipIpAddr, netmask: UipIpAddr, draddr: UipIpAddr, table: [ArpEntry: 8], arptime: byte }
+struct ArpEntry { ipaddr: [u16: 2], ethaddr: UipEthAddr, time: byte }
+
+struct UnixPortState {
+    uip: UipState,
+    runtime: UipRuntime,
+    arp: UipArpState,
+    periodic_timer: Timer,
+    arp_timer: Timer
+}
+
+fn zero_mac() UipEthAddr { return UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }; }
+
+fn make_zero_stats() UipStats {
+    return UipStats {
+        ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 }
+    };
+}
+
+fn make_runtime() UipRuntime {
+    var stats: UipStats = make_zero_stats();
+    return UipRuntime {
+        frame: UipRuntimeFrame {
+            ethip: EthIpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16] },
+            ethtcp: EthTcpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, seqno: [0 as byte,0 as byte,0 as byte,0 as byte], ackno: [0 as byte,0 as byte,0 as byte,0 as byte], tcpoffset: 0 as byte, flags: 0 as byte, wnd: [0 as byte,0 as byte], tcpchksum: 0u16, urgp: 0u16, optdata: [0 as byte,0 as byte,0 as byte,0 as byte] },
+            ethudp: EthUdpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, udplen: 0u16, udpchksum: 0u16 },
+            arp: ArpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, hwtype: 0u16, protocol: 0u16, hwlen: 0 as byte, protolen: 0 as byte, opcode: 0u16, shwaddr: zero_mac(), sipaddr: [0u16,0u16], dhwaddr: zero_mac(), dipaddr: [0u16,0u16] }
+        },
+        appdata: null,
+        sappdata: null,
+        len: 0u16,
+        uip_len: 0u16,
+        uip_slen: 0u16,
+        flags: 0 as byte,
+        hostaddr: UipIpAddr { words: [0u16,0u16] },
+        draddr: UipIpAddr { words: [0u16,0u16] },
+        netmask: UipIpAddr { words: [0u16,0u16] },
+        stats: &stats,
+        urgdata: null,
+        urglen: 0u16,
+        surglen: 0u16,
+        logbuf: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16],
+        logcount: 0usize,
+        logcode: 0 as byte,
+        logparam: 0u16,
+        current_conn: -1,
+        current_udp_conn: -1,
+        payload_view: null,
+        payload_len: 0u16,
+        input_view: null,
+        input_len: 0u16,
+        app_input: null,
+        app_input_len: 0u16,
+        app_output: null,
+        slen: 0u16,
+        logs: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16],
+        ipid: 0u16,
+        te_reply: false
+    };
+}
+
+fn make_state() UipState {
+    return UipState {
+        conns: [UipConn { ripaddr: [0u16,0u16], lport: 0u16, rport: 0u16, rcv_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], snd_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], len: 0u16, mss: 0u16, initialmss: 0u16, sa: 0 as byte, sv: 0 as byte, rto: 0 as byte, tcpstateflags: 0 as byte, timer: 0 as byte, nrtx: 0 as byte, appstate: 0u16 }: 10],
+        listener_ports: [0u16: 10],
+        udp_conns: [UipUdpConn { ripaddr: [0u16,0u16], lport: 0u16, rport: 0u16, ttl: 0 as byte, appstate: 0u16 }: 10],
+        hostaddr: UipIpAddr { words: [0u16,0u16] },
+        stats: make_zero_stats(),
+        iss: [0 as byte,0 as byte,0 as byte,0 as byte],
+        lastport: 0u16
+    };
+}
+
+fn make_arp_state() UipArpState {
+    return UipArpState { ethaddr: zero_mac(), hostaddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: [0u16,0u16], ethaddr: zero_mac(), time: 0 as byte }: 8], arptime: 0 as byte };
+}
+
+fn unix_port_init(now_ms: u64) UnixPortState {
+    var ps: UnixPortState = UnixPortState {
+        uip: make_state(),
+        runtime: make_runtime(),
+        arp: make_arp_state(),
+        periodic_timer: Timer { start: 0u64, interval: 0u64 },
+        arp_timer: Timer { start: 0u64, interval: 0u64 }
+    };
+    uip_init(&ps.uip);
+    uip_runtime_init(&ps.runtime);
+    uip_arp_init(&ps.arp);
+    const host: UipIpAddr = uip_ipaddr(192 as byte,168 as byte,0 as byte,2 as byte);
+    const router: UipIpAddr = uip_ipaddr(192 as byte,168 as byte,0 as byte,1 as byte);
+    const mask: UipIpAddr = uip_ipaddr(255 as byte,255 as byte,255 as byte,0 as byte);
+    uip_sethostaddr(&ps.runtime, &host);
+    uip_setdraddr(&ps.runtime, &router);
+    uip_setnetmask(&ps.runtime, &mask);
+    ps.arp.hostaddr = host;
+    ps.arp.draddr = router;
+    ps.arp.netmask = mask;
+    timer_set(&ps.periodic_timer, CLOCK_SECOND / 2u64, now_ms);
+    timer_set(&ps.arp_timer, CLOCK_SECOND * 10u64, now_ms);
+    return ps;
+}
+
+fn unix_apply_result(rt: &UipRuntime, result: &UipProcessResult) void {
+    rt.flags = result.flags;
+    rt.len = result.len;
+}
+
+fn unix_prepare_out_frame(rt: &UipRuntime) UipFrame {
+    return UipFrame { ethip: rt.frame.ethip, ethtcp: rt.frame.ethtcp, ethudp: rt.frame.ethudp, arp: rt.frame.arp };
+}
+
+fn unix_store_out_frame(rt: &UipRuntime, frame: &UipFrame) void {
+    rt.frame.ethip = frame.ethip;
+    rt.frame.ethtcp = frame.ethtcp;
+    rt.frame.ethudp = frame.ethudp;
+    rt.frame.arp = frame.arp;
+}
+
+fn unix_process_input(ps: &UnixPortState, incoming_len: u16) u16 {
+    const ethtype: u16 = ps.runtime.frame.ethip.ethhdr.type;
+    if ethtype == htons((UIP_ETHTYPE_IP as! u16).value) {
+        var ip_len: u16 = incoming_len;
+        uip_arp_ipin(&ps.arp, &ps.runtime.frame.ethip, &ip_len);
+        const result: UipProcessResult = uip_input(&ps.uip, &ps.runtime, -1, incoming_len, false, false, 0u16);
+        unix_apply_result(&ps.runtime, &result);
+        if ps.runtime.len > 0u16 {
+            var frame: UipFrame = unix_prepare_out_frame(&ps.runtime);
+            var send_len: u16 = ps.runtime.len;
+            uip_arp_out(&ps.arp, &frame, &send_len);
+            unix_store_out_frame(&ps.runtime, &frame);
+            return send_len;
+        }
+        return 0u16;
+    }
+    if ethtype == htons((UIP_ETHTYPE_ARP as! u16).value) {
+        var arp_len: u16 = incoming_len;
+        uip_arp_arpin(&ps.arp, &ps.runtime.frame.arp, &arp_len);
+        return arp_len;
+    }
+    return 0u16;
+}
+
+fn unix_process_periodic(ps: &UnixPortState, now_ms: u64) u16 {
+    var out_len: u16 = 0u16;
+    if timer_expired(&ps.periodic_timer, now_ms) {
+        timer_reset(&ps.periodic_timer);
+        var i: i32 = 0;
+        while i < UIP_CONNS {
+            const result: UipProcessResult = uip_periodic(&ps.uip, &ps.runtime, i);
+            unix_apply_result(&ps.runtime, &result);
+            if ps.runtime.len > 0u16 {
+                var frame: UipFrame = unix_prepare_out_frame(&ps.runtime);
+                out_len = ps.runtime.len;
+                uip_arp_out(&ps.arp, &frame, &out_len);
+                unix_store_out_frame(&ps.runtime, &frame);
+                break;
+            }
+            i = i + 1;
+        }
+        if timer_expired(&ps.arp_timer, now_ms) {
+            timer_reset(&ps.arp_timer);
+            uip_arp_timer(&ps.arp);
+        }
+    }
+    return out_len;
+}
+
+test "unix port init configures classic addresses and timers" {
+    var ps: UnixPortState = unix_port_init(1234u64);
+    const host: UipIpAddr = uip_ipaddr(192 as byte,168 as byte,0 as byte,2 as byte);
+    const router: UipIpAddr = uip_ipaddr(192 as byte,168 as byte,0 as byte,1 as byte);
+    const mask: UipIpAddr = uip_ipaddr(255 as byte,255 as byte,255 as byte,0 as byte);
+    try assert_eq_i32(ps.runtime.hostaddr.words[0] as i32, host.words[0] as i32);
+    try assert_eq_i32(ps.runtime.draddr.words[0] as i32, router.words[0] as i32);
+    try assert_eq_i32(ps.runtime.netmask.words[0] as i32, mask.words[0] as i32);
+    try assert_eq_i32(ps.arp.hostaddr.words[1] as i32, host.words[1] as i32);
+    try assert_eq_i32(ps.periodic_timer.interval as i32, 500);
+    try assert_eq_i32(ps.arp_timer.interval as i32, 10000);
+}
+
+test "unix port periodic path calls arp timer after expiry" {
+    var ps: UnixPortState = unix_port_init(0u64);
+    ps.arp.arptime = 119 as byte;
+    ps.arp.table[0].ipaddr[0] = 1u16;
+    ps.arp.table[0].ipaddr[1] = 2u16;
+    ps.arp.table[0].time = 0 as byte;
+    _ = unix_process_periodic(&ps, 10000u64);
+    try assert_eq_i32(ps.arp.arptime as i32, 120);
+    try assert_eq_i32(ps.arp.table[0].ipaddr[0] as i32, 0);
+}

@@ -17,8 +17,12 @@ struct UipIpAddr { words: [u16: 2] }
 struct UipStatsBlock { drop: u16, recv: u16, sent: u16, a: u16, b: u16, c: u16, d: u16, e: u16, f: u16 }
 struct UipStatsUdpBlock { drop: u16, recv: u16, sent: u16, chkerr: u16 }
 struct UipStats { ip: UipStatsBlock, icmp: UipStatsBlock, tcp: UipStatsBlock, udp: UipStatsUdpBlock }
+struct UipRuntimeLog { code: byte, arg0: u16, arg1: u16 }
 struct UipConn { ripaddr: [u16: 2], lport: u16, rport: u16, rcv_nxt: [byte: 4], snd_nxt: [byte: 4], len: u16, mss: u16, initialmss: u16, sa: byte, sv: byte, rto: byte, tcpstateflags: byte, timer: byte, nrtx: byte, appstate: u16 }
 struct UipUdpConn { ripaddr: [u16: 2], lport: u16, rport: u16, ttl: byte, appstate: u16 }
+struct UipRuntimeFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
+struct UipRuntime { frame: UipRuntimeFrame, appdata: &byte, sappdata: &byte, len: u16, uip_len: u16, uip_slen: u16, flags: byte, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, stats: &UipStats, urgdata: &byte, urglen: u16, surglen: u16, logbuf: [UipRuntimeLog: 16], logcount: usize, logcode: byte, logparam: u16, current_conn: i32, current_udp_conn: i32, payload_view: &byte, payload_len: u16, input_view: &byte, input_len: u16, app_input: &byte, app_input_len: u16, app_output: &byte, slen: u16, logs: [UipRuntimeLog: 16], ipid: u16, te_reply: bool }
+struct UipProcessResult { flags: byte, len: u16, poll: bool, timed_out: bool, retransmit: bool, appcall: bool, closed: bool, logged: bool, urgdata: bool }
 struct UipState { conns: [UipConn: 10], listener_ports: [u16: 10], udp_conns: [UipUdpConn: 10], hostaddr: UipIpAddr, stats: UipStats, iss: [byte: 4], lastport: u16 }
 struct UipIcmp6Hdr { type: byte, code: byte, icmpchksum: u16, data: [byte: 4] }
 struct UipIcmp6NeighborHdr { type: byte, code: byte, icmpchksum: u16, flags: [byte: 4], targetipaddr: [u16: 8] }
@@ -34,9 +38,6 @@ struct EthIpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid:
 struct EthTcpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, seqno: [byte: 4], ackno: [byte: 4], tcpoffset: byte, flags: byte, wnd: [byte: 2], tcpchksum: u16, urgp: u16, optdata: [byte: 4] }
 struct EthUdpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, udplen: u16, udpchksum: u16 }
 struct ArpHdr { ethhdr: UipEthHdr, hwtype: u16, protocol: u16, hwlen: byte, protolen: byte, opcode: u16, shwaddr: UipEthAddr, sipaddr: [u16: 2], dhwaddr: UipEthAddr, dipaddr: [u16: 2] }
-struct UipRuntimeLog { code: byte, arg0: u16, arg1: u16 }
-struct UipRuntimeFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
-struct UipRuntime { frame: UipRuntimeFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, urgdata: &byte, len: u16, uip_len: u16, uip_slen: u16, slen: u16, urglen: u16, surglen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, payload_view: &byte, payload_len: u16, input_view: &byte, input_len: u16, app_input: &byte, app_input_len: u16, app_output: &byte, logbuf: [UipRuntimeLog: 16], logcount: usize, logcode: byte, logparam: u16, logs: [UipRuntimeLog: 16], ipid: u16, stats: &UipStats, te_reply: bool }
 
 fn make_zero_stats() UipStats {
     return UipStats {

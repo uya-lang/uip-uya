@@ -1,0 +1,192 @@
+// Example port of the classic /uip/unix/main.c event loop to uya-uip.
+//
+// This example intentionally focuses on the control flow shape:
+//   - initialize runtime/state/ARP/timers
+//   - configure host/router/netmask
+//   - poll a device abstraction
+//   - dispatch IP vs ARP frames
+//   - run periodic TCP/UDP timers
+//   - run ARP aging timer
+//
+// Unlike the original C example, this file does not directly open /dev/net/tun.
+// The tap device is modeled as small host callbacks so the event loop can be
+// reused with different Uya host integrations.
+
+extern fn uip_init(state: &UipState) void;
+extern fn uip_runtime_init(rt: &UipRuntime) void;
+extern fn uip_sethostaddr(rt: &UipRuntime, addr: &UipIpAddr) void;
+extern fn uip_setdraddr(rt: &UipRuntime, addr: &UipIpAddr) void;
+extern fn uip_setnetmask(rt: &UipRuntime, addr: &UipIpAddr) void;
+extern fn uip_periodic(state: &UipState, rt: &UipRuntime, conn_index: i32) UipProcessResult;
+extern fn uip_input(state: &UipState, rt: &UipRuntime, conn_index: i32, incoming_len: u16, has_ack: bool, has_fin: bool, app_slen: u16) UipProcessResult;
+extern fn uip_arp_init(state: &UipArpState) void;
+extern fn uip_arp_arpin(state: &UipArpState, buf: &ArpHdr, len: &u16) void;
+extern fn uip_arp_out(state: &UipArpState, frame: &UipFrame, len: &u16) void;
+extern fn timer_set(t: &Timer, interval: u64, now: u64) void;
+extern fn timer_reset(t: &Timer) void;
+extern fn timer_expired(t: &Timer, now: u64) bool;
+extern fn htons(val: u16) u16;
+extern fn uip_ipaddr(a: byte, b: byte, c: byte, d: byte) UipIpAddr;
+
+extern const UIP_CONNS: i32;
+extern const UIP_ETHTYPE_IP: i32;
+extern const UIP_ETHTYPE_ARP: i32;
+
+struct UipIpAddr { words: [u16: 2] }
+struct UipEthAddr { addr: [byte: 6] }
+struct UipEthHdr { dest: UipEthAddr, src: UipEthAddr, type: u16 }
+struct ArpHdr { ethhdr: UipEthHdr, hwtype: u16, protocol: u16, hwlen: byte, protolen: byte, opcode: u16, shwaddr: UipEthAddr, sipaddr: [u16: 2], dhwaddr: UipEthAddr, dipaddr: [u16: 2] }
+struct EthIpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2] }
+struct EthTcpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, seqno: [byte: 4], ackno: [byte: 4], tcpoffset: byte, flags: byte, wnd: [byte: 2], tcpchksum: u16, urgp: u16, optdata: [byte: 4] }
+struct EthUdpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, udplen: u16, udpchksum: u16 }
+struct UipFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
+struct UipStatsBlock { drop: u16, recv: u16, sent: u16, a: u16, b: u16, c: u16, d: u16, e: u16, f: u16 }
+struct UipStatsUdpBlock { drop: u16, recv: u16, sent: u16, chkerr: u16 }
+struct UipStats { ip: UipStatsBlock, icmp: UipStatsBlock, tcp: UipStatsBlock, udp: UipStatsUdpBlock }
+struct UipRuntime { frame: UipFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, urgdata: &byte, len: u16, slen: u16, urglen: u16, surglen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, acc32: [byte: 4], ipid: u16, iss: [byte: 4], logcode: byte, logparam: u16, stats: &UipStats, te_reply: bool }
+struct UipConn { ripaddr: [u16: 2], lport: u16, rport: u16, rcv_nxt: [byte: 4], snd_nxt: [byte: 4], len: u16, mss: u16, initialmss: u16, sa: byte, sv: byte, rto: byte, tcpstateflags: byte, timer: byte, nrtx: byte, appstate: u16 }
+struct UipUdpConn { ripaddr: [u16: 2], lport: u16, rport: u16, ttl: byte, appstate: u16 }
+struct UipState { listener_ports: [u16: 20], conns: [UipConn: 10], udp_conns: [UipUdpConn: 10], acc32: [byte: 4], flags: byte, len: u16, lastport: u16 }
+struct UipArpState { ethaddr: UipEthAddr, hostaddr: UipIpAddr, netmask: UipIpAddr, draddr: UipIpAddr, table: [ArpEntry: 8], arptime: byte }
+struct ArpEntry { ipaddr: UipIpAddr, ethaddr: UipEthAddr, time: byte }
+struct UipProcessResult { flags: byte, len: u16, slen: u16, current_conn: i32, current_udp_conn: i32 }
+struct Timer { start: u64, interval: u64 }
+
+// Host integration points.
+extern fn example_now_ms() u64;
+extern fn example_tapdev_init() void;
+extern fn example_tapdev_read(frame: &UipFrame, len: &u16) bool;
+extern fn example_tapdev_send(frame: &UipFrame, len: u16) void;
+extern fn example_httpd_init() void;
+extern fn example_yield() void;
+
+fn zero_mac() UipEthAddr { return UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }; }
+
+fn zero_stats() UipStats {
+    return UipStats {
+        ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 }
+    };
+}
+
+fn make_runtime() UipRuntime {
+    var stats: UipStats = zero_stats();
+    return UipRuntime {
+        frame: UipFrame {
+            ethip: EthIpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16] },
+            ethtcp: EthTcpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, seqno: [0 as byte,0 as byte,0 as byte,0 as byte], ackno: [0 as byte,0 as byte,0 as byte,0 as byte], tcpoffset: 0 as byte, flags: 0 as byte, wnd: [0 as byte,0 as byte], tcpchksum: 0u16, urgp: 0u16, optdata: [0 as byte,0 as byte,0 as byte,0 as byte] },
+            ethudp: EthUdpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, udplen: 0u16, udpchksum: 0u16 },
+            arp: ArpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, hwtype: 0u16, protocol: 0u16, hwlen: 0 as byte, protolen: 0 as byte, opcode: 0u16, shwaddr: zero_mac(), sipaddr: [0u16,0u16], dhwaddr: zero_mac(), dipaddr: [0u16,0u16] }
+        },
+        hostaddr: UipIpAddr { words: [0u16,0u16] },
+        draddr: UipIpAddr { words: [0u16,0u16] },
+        netmask: UipIpAddr { words: [0u16,0u16] },
+        appdata: null,
+        sappdata: null,
+        urgdata: null,
+        len: 0u16,
+        slen: 0u16,
+        urglen: 0u16,
+        surglen: 0u16,
+        flags: 0 as byte,
+        current_conn: -1,
+        current_udp_conn: -1,
+        acc32: [0 as byte,0 as byte,0 as byte,0 as byte],
+        ipid: 0u16,
+        iss: [0 as byte,0 as byte,0 as byte,0 as byte],
+        logcode: 0 as byte,
+        logparam: 0u16,
+        stats: &stats,
+        te_reply: false
+    };
+}
+
+fn handle_outbound_ip(arp: &UipArpState, rt: &UipRuntime) void {
+    if rt.len > 0u16 {
+        var out_len: u16 = rt.len;
+        uip_arp_out(arp, &rt.frame, &out_len);
+        example_tapdev_send(&rt.frame, out_len);
+    }
+}
+
+fn handle_periodic(state: &UipState, rt: &UipRuntime, arp: &UipArpState) void {
+    var i: i32 = 0;
+    while i < UIP_CONNS {
+        var result: UipProcessResult = uip_periodic(state, rt, i);
+        rt.flags = result.flags;
+        rt.len = result.len;
+        rt.slen = result.slen;
+        rt.current_conn = result.current_conn;
+        rt.current_udp_conn = result.current_udp_conn;
+        handle_outbound_ip(arp, rt);
+        i = i + 1;
+    }
+}
+
+export fn unix_like_uya_uip_example() void {
+    var state: UipState = UipState { listener_ports: [0u16: 20], conns: [UipConn { ripaddr: [0u16,0u16], lport: 0u16, rport: 0u16, rcv_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], snd_nxt: [0 as byte,0 as byte,0 as byte,0 as byte], len: 0u16, mss: 0u16, initialmss: 0u16, sa: 0 as byte, sv: 0 as byte, rto: 0 as byte, tcpstateflags: 0 as byte, timer: 0 as byte, nrtx: 0 as byte, appstate: 0u16 }: 10], udp_conns: [UipUdpConn { ripaddr: [0u16,0u16], lport: 0u16, rport: 0u16, ttl: 0 as byte, appstate: 0u16 }: 10], acc32: [0 as byte,0 as byte,0 as byte,0 as byte], flags: 0 as byte, len: 0u16, lastport: 0u16 };
+    var rt: UipRuntime = make_runtime();
+    var arp: UipArpState = UipArpState { ethaddr: zero_mac(), hostaddr: UipIpAddr { words: [0u16,0u16] }, netmask: UipIpAddr { words: [0u16,0u16] }, draddr: UipIpAddr { words: [0u16,0u16] }, table: [ArpEntry { ipaddr: UipIpAddr { words: [0u16,0u16] }, ethaddr: zero_mac(), time: 0 as byte }: 8], arptime: 0 as byte };
+    var periodic_timer: Timer = Timer { start: 0u64, interval: 0u64 };
+    var arp_timer: Timer = Timer { start: 0u64, interval: 0u64 };
+
+    const now0: u64 = example_now_ms();
+    timer_set(&periodic_timer, 500u64, now0);
+    timer_set(&arp_timer, 10_000u64, now0);
+
+    example_tapdev_init();
+    uip_init(&state);
+    uip_runtime_init(&rt);
+    uip_arp_init(&arp);
+
+    const host: UipIpAddr = uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 2 as byte);
+    const router: UipIpAddr = uip_ipaddr(192 as byte, 168 as byte, 0 as byte, 1 as byte);
+    const netmask: UipIpAddr = uip_ipaddr(255 as byte, 255 as byte, 255 as byte, 0 as byte);
+    uip_sethostaddr(&rt, &host);
+    uip_setdraddr(&rt, &router);
+    uip_setnetmask(&rt, &netmask);
+    arp.hostaddr = host;
+    arp.draddr = router;
+    arp.netmask = netmask;
+
+    example_httpd_init();
+
+    while true {
+        var in_len: u16 = 0u16;
+        const got_packet: bool = example_tapdev_read(&rt.frame, &in_len);
+        if got_packet && in_len > 0u16 {
+            rt.len = in_len;
+            const ethtype: u16 = rt.frame.ethip.ethhdr.type;
+            if ethtype == htons((UIP_ETHTYPE_IP as! u16).value) {
+                // The current Uya port does not expose the classic no-arg uip_input().
+                // Instead, drive the core with explicit parameters from your host/parser.
+                var result: UipProcessResult = uip_input(&state, &rt, -1, in_len, false, false, 0u16);
+                rt.flags = result.flags;
+                rt.len = result.len;
+                rt.slen = result.slen;
+                rt.current_conn = result.current_conn;
+                rt.current_udp_conn = result.current_udp_conn;
+                handle_outbound_ip(&arp, &rt);
+            } else if ethtype == htons((UIP_ETHTYPE_ARP as! u16).value) {
+                var arp_len: u16 = in_len;
+                uip_arp_arpin(&arp, &rt.frame.arp, &arp_len);
+                if arp_len > 0u16 {
+                    example_tapdev_send(&rt.frame, arp_len);
+                }
+            }
+        } else {
+            const now: u64 = example_now_ms();
+            if timer_expired(&periodic_timer, now) {
+                timer_reset(&periodic_timer);
+                handle_periodic(&state, &rt, &arp);
+                if timer_expired(&arp_timer, now) {
+                    timer_reset(&arp_timer);
+                    // If needed, add explicit ARP aging here once host code wants it.
+                }
+            }
+            example_yield();
+        }
+    }
+}

@@ -1,6 +1,6 @@
 # uIP Uya 移植
 
-版本：v0.1.0
+版本：v0.2.0
 
 本仓库在 `ports/uip/` 目录下提供对原始 C 版本 `uIP`（对照源目录：`/home/ubuntu/Documents/uip/uip/`）的 Uya 语言移植。当前主实现已按职责拆分到 `ports/uip/uip_base.uya`、`ports/uip/uip_core.uya`、`ports/uip/uip_proto.uya`、`ports/uip/uip_arp.uya`、`ports/uip/uip_fw_core.uya`，`ports/uip/uiplib.uya` 保留为兼容入口；测试位于 `ports/uip/tests/`。
 
@@ -23,6 +23,53 @@
 - 测试侧大 initializer / 结构长度不匹配问题已大范围收敛，主测试矩阵已通过宿主 C 编译与链接验证
 
 ## 原始 uIP 与当前仓库移植对照表
+
+### 逐文件对照（更新版）
+
+| 原始文件 | 当前 Uya 对应 | 结论 | 说明 |
+|---|---|---|---|
+| `uip.c` | `ports/uip/uip_core.uya` | 已移植 | 核心 TCP/UDP、定时器、重传、TIME_WAIT、reassembly、runtime features 已迁移；关键实现可见 `ports/uip/uip_core.uya:637`、`ports/uip/uip_core.uya:1402`、`ports/uip/uip_core.uya:1464` |
+| `uip.h` | `ports/uip/uip_base.uya` + `ports/uip/uip_core.uya` | 已移植 | 常量、结构、协议头、状态定义已拆分收敛 |
+| `uipopt.h` | `ports/uip/uip_base.uya` / 相关模块常量 | 已移植 | 配置项改为 `export const` 形式内联 |
+| `uip_arch.h` | `ports/uip/uip_base.uya` | 已移植 | 字节序/地址辅助逻辑已吸收 |
+| `uiplib.c` | `ports/uip/uip_core.uya`、`ports/uip/uiplib.uya` | 已移植 | `uiplib_ipaddrconv` 已实现于 `ports/uip/uip_core.uya:318` |
+| `uiplib.h` | `ports/uip/uiplib.uya` | 已移植 | 兼容入口保留 |
+| `timer.c` | `ports/uip/uip_proto.uya` | 已移植 | `timer_set/reset/restart/expired` 等能力已迁移 |
+| `timer.h` | `ports/uip/uip_proto.uya` | 已移植 | `Timer` 结构与接口已迁移 |
+| `uip_arp.c` | `ports/uip/uip_arp.uya` | 已移植 | ARP 表、输入输出、地址更新等能力已迁移 |
+| `uip_arp.h` | `ports/uip/uip_arp.uya` | 已移植 | ARP 常量、结构、接口已覆盖 |
+| `uip-neighbor.c` | `ports/uip/uip_fw_core.uya`、`ports/uip/uip_neighbor_lib.uya` | 已移植 | 邻居表已拆分；当前 canonical source 为 `ports/uip/uip_neighbor_lib.uya` |
+| `uip-neighbor.h` | `ports/uip/uip_fw_core.uya` | 已移植 | `uip_neighbor_init/add/update/lookup` 等接口已存在 |
+| `uip-fw.c` | `ports/uip/uip_fw_core.uya` | 已移植 | `uip_fw_init/register/default/output/forward/periodic` 等能力已迁移 |
+| `uip-fw.h` | `ports/uip/uip_fw_core.uya` | 已移植 | forward 常量、结构、接口已覆盖 |
+| `uip-split.c` | `ports/uip/uip_fw_core.uya` | 已移植 | `uip_split_output` 已实现于 `ports/uip/uip_fw_core.uya:484` |
+| `uip-split.h` | `ports/uip/uip_fw_core.uya` | 已移植 | 拆分发送接口与追踪结构已并入 fw/split 模块 |
+| `pt.h` | `ports/uip/uip_proto.uya` | 等价移植 | 不再使用原版 C 宏控制流，改为 helper/resume-point 风格 |
+| `psock.c` | `ports/uip/uip_proto.uya` | 等价移植 | `psock_init/send/generator_send/readbuf/readto` 与事件桥接已迁移 |
+| `psock.h` | `ports/uip/uip_proto.uya` | 等价移植 | `Psock` / `PsockBuf`、状态与 bridge 接口已迁移 |
+| `lc.h` | `ports/uip/uip_proto.uya` | 等价移植 | `Lc` 显式状态层已提供等价能力 |
+| `lc-switch.h` | `ports/uip/uip_proto.uya` | 未原样移植，已有等价层 | 当前以 `Lc` 显式状态承载 continuation 语义 |
+| `lc-addrlabels.h` | 无单独文件 | 未单独移植 | 当前不再使用 C 预处理宏标签机制 |
+| `clock.h` | `ports/uip/uip_proto.uya` 中 `Timer` 能力 | 未单独移植 | 当前单独时钟抽象由 `Timer` 覆盖 |
+| `Makefile.include` | 无 | 无需移植 | 构建改由当前仓库 Uya 工具链负责 |
+
+### 结论归纳
+
+#### 1. 现有仓库中可认定为“未移植”的原始项
+- `lc-addrlabels.h`
+- `clock.h`
+- `Makefile.include`（构建文件，不属于协议功能缺口）
+
+#### 2. 已移植但不是“原样保留”的项
+- `lc-switch.h`：由 `Lc` 显式状态等价层替代
+- `pt.h`：由 helper/resume-point 风格替代原 C 宏控制流
+- `psock.c` / `psock.h`：采用事件桥接 + helper 风格的 Uya 端口语义
+
+#### 3. 总体判断
+- 若按“功能是否存在”判断：当前仓库**没有明显尚未移植的核心 uIP 功能**
+- 若按“是否逐文件原样保留”判断：主要差异集中在 `lc/pt/psock` 这类控制流与承载方式相关模块
+
+### 历史对照摘要
 
 | 原始文件 | 当前状态 | Uya 对应实现 / 说明 |
 |---|---|---|
@@ -50,6 +97,7 @@
 | `lc-addrlabels.h` | 无需单独移植 | 当前采用 `Lc` 结构而非 C 预处理宏标签机制 |
 | `clock.h` | 未单独移植 | 当前 uIP 端口未依赖单独时钟抽象，计时能力由 `Timer` 覆盖 |
 | `Makefile.include` | 无需移植 | 构建由当前仓库 Uya 工具链负责 |
+
 
 ## 模块拆分计划（进行中）
 

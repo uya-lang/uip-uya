@@ -13,9 +13,10 @@ struct ArpHdr { ethhdr: UipEthHdr, hwtype: u16, protocol: u16, hwlen: byte, prot
 struct UipRuntimeLog { code: byte, arg0: u16, arg1: u16 }
 struct UipConn { ripaddr: [u16: 2], lport: u16, rport: u16, rcv_nxt: [byte: 4], snd_nxt: [byte: 4], len: u16, mss: u16, initialmss: u16, sa: byte, sv: byte, rto: byte, tcpstateflags: byte, timer: byte, nrtx: byte, appstate: u16 }
 struct UipUdpConn { ripaddr: [u16: 2], lport: u16, rport: u16, ttl: byte, appstate: u16 }
-struct UipState { conns: [UipConn: 10], listener_ports: [u16: 10], udp_conns: [UipUdpConn: 10], hostaddr: UipIpAddr, stats: UipStats, iss: [byte: 4], lastport: u16 }
 struct UipRuntimeFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
-struct UipRuntime { frame: UipRuntimeFrame, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, appdata: &byte, sappdata: &byte, urgdata: &byte, len: u16, uip_len: u16, uip_slen: u16, slen: u16, urglen: u16, surglen: u16, flags: byte, current_conn: i32, current_udp_conn: i32, payload_view: &byte, payload_len: u16, input_view: &byte, input_len: u16, app_input: &byte, app_input_len: u16, app_output: &byte, logbuf: [UipRuntimeLog: 16], logcount: usize, logcode: byte, logparam: u16, logs: [UipRuntimeLog: 16], ipid: u16, stats: &UipStats, te_reply: bool }
+struct UipRuntime { frame: UipRuntimeFrame, appdata: &byte, sappdata: &byte, len: u16, uip_len: u16, uip_slen: u16, flags: byte, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, stats: &UipStats, urgdata: &byte, urglen: u16, surglen: u16, logbuf: [UipRuntimeLog: 16], logcount: usize, logcode: byte, logparam: u16, current_conn: i32, current_udp_conn: i32, payload_view: &byte, payload_len: u16, input_view: &byte, input_len: u16, app_input: &byte, app_input_len: u16, app_output: &byte, slen: u16, logs: [UipRuntimeLog: 16], ipid: u16, te_reply: bool }
+struct UipProcessResult { flags: byte, len: u16, poll: bool, timed_out: bool, retransmit: bool, appcall: bool, closed: bool, logged: bool, urgdata: bool }
+struct UipState { conns: [UipConn: 10], listener_ports: [u16: 10], udp_conns: [UipUdpConn: 10], hostaddr: UipIpAddr, stats: UipStats, iss: [byte: 4], lastport: u16 }
 
 
 test "uiplib_ipaddrconv focused parses dotted quad" {

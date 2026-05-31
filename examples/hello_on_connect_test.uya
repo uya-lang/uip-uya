@@ -1,0 +1,92 @@
+use std.testing;
+
+extern fn uip_runtime_init(rt: &UipRuntime) void;
+extern fn uip_send(rt: &UipRuntime, data: &byte, len: u16) void;
+extern fn uip_connected(flags: byte) bool;
+extern const UIP_CONNECTED: i32;
+
+struct UipIpAddr { words: [u16: 2] }
+struct UipEthAddr { addr: [byte: 6] }
+struct UipEthHdr { dest: UipEthAddr, src: UipEthAddr, type: u16 }
+struct EthIpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2] }
+struct EthTcpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, seqno: [byte: 4], ackno: [byte: 4], tcpoffset: byte, flags: byte, wnd: [byte: 2], tcpchksum: u16, urgp: u16, optdata: [byte: 4] }
+struct EthUdpHdr { ethhdr: UipEthHdr, vhl: byte, tos: byte, len: [byte: 2], ipid: [byte: 2], ipoffset: [byte: 2], ttl: byte, proto: byte, ipchksum: u16, srcipaddr: [u16: 2], destipaddr: [u16: 2], srcport: u16, destport: u16, udplen: u16, udpchksum: u16 }
+struct ArpHdr { ethhdr: UipEthHdr, hwtype: u16, protocol: u16, hwlen: byte, protolen: byte, opcode: u16, shwaddr: UipEthAddr, sipaddr: [u16: 2], dhwaddr: UipEthAddr, dipaddr: [u16: 2] }
+struct UipStatsBlock { drop: u16, recv: u16, sent: u16, a: u16, b: u16, c: u16, d: u16, e: u16, f: u16 }
+struct UipStatsUdpBlock { drop: u16, recv: u16, sent: u16, chkerr: u16 }
+struct UipStats { ip: UipStatsBlock, icmp: UipStatsBlock, tcp: UipStatsBlock, udp: UipStatsUdpBlock }
+struct UipRuntimeLog { code: byte, arg0: u16, arg1: u16 }
+struct UipRuntimeFrame { ethip: EthIpHdr, ethtcp: EthTcpHdr, ethudp: EthUdpHdr, arp: ArpHdr }
+struct UipRuntime { frame: UipRuntimeFrame, appdata: &byte, sappdata: &byte, len: u16, uip_len: u16, uip_slen: u16, flags: byte, hostaddr: UipIpAddr, draddr: UipIpAddr, netmask: UipIpAddr, stats: &UipStats, urgdata: &byte, urglen: u16, surglen: u16, logbuf: [UipRuntimeLog: 16], logcount: usize, logcode: byte, logparam: u16, current_conn: i32, current_udp_conn: i32, payload_view: &byte, payload_len: u16, input_view: &byte, input_len: u16, app_input: &byte, app_input_len: u16, app_output: &byte, slen: u16, logs: [UipRuntimeLog: 16], ipid: u16, te_reply: bool }
+
+fn zero_mac() UipEthAddr { return UipEthAddr { addr: [0 as byte,0 as byte,0 as byte,0 as byte,0 as byte,0 as byte] }; }
+
+fn zero_stats() UipStats {
+    return UipStats {
+        ip: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        icmp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        tcp: UipStatsBlock { drop: 0u16, recv: 0u16, sent: 0u16, a: 0u16, b: 0u16, c: 0u16, d: 0u16, e: 0u16, f: 0u16 },
+        udp: UipStatsUdpBlock { drop: 0u16, recv: 0u16, sent: 0u16, chkerr: 0u16 }
+    };
+}
+
+fn make_runtime() UipRuntime {
+    var stats: UipStats = zero_stats();
+    return UipRuntime {
+        frame: UipRuntimeFrame {
+            ethip: EthIpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16] },
+            ethtcp: EthTcpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, seqno: [0 as byte,0 as byte,0 as byte,0 as byte], ackno: [0 as byte,0 as byte,0 as byte,0 as byte], tcpoffset: 0 as byte, flags: 0 as byte, wnd: [0 as byte,0 as byte], tcpchksum: 0u16, urgp: 0u16, optdata: [0 as byte,0 as byte,0 as byte,0 as byte] },
+            ethudp: EthUdpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, vhl: 0 as byte, tos: 0 as byte, len: [0 as byte,0 as byte], ipid: [0 as byte,0 as byte], ipoffset: [0 as byte,0 as byte], ttl: 0 as byte, proto: 0 as byte, ipchksum: 0u16, srcipaddr: [0u16,0u16], destipaddr: [0u16,0u16], srcport: 0u16, destport: 0u16, udplen: 0u16, udpchksum: 0u16 },
+            arp: ArpHdr { ethhdr: UipEthHdr { dest: zero_mac(), src: zero_mac(), type: 0u16 }, hwtype: 0u16, protocol: 0u16, hwlen: 0 as byte, protolen: 0 as byte, opcode: 0u16, shwaddr: zero_mac(), sipaddr: [0u16,0u16], dhwaddr: zero_mac(), dipaddr: [0u16,0u16] }
+        },
+        appdata: null,
+        sappdata: null,
+        len: 0u16,
+        uip_len: 0u16,
+        uip_slen: 0u16,
+        flags: 0 as byte,
+        hostaddr: UipIpAddr { words: [0u16,0u16] },
+        draddr: UipIpAddr { words: [0u16,0u16] },
+        netmask: UipIpAddr { words: [0u16,0u16] },
+        stats: &stats,
+        urgdata: null,
+        urglen: 0u16,
+        surglen: 0u16,
+        logbuf: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16],
+        logcount: 0usize,
+        logcode: 0 as byte,
+        logparam: 0u16,
+        current_conn: -1,
+        current_udp_conn: -1,
+        payload_view: null,
+        payload_len: 0u16,
+        input_view: null,
+        input_len: 0u16,
+        app_input: null,
+        app_input_len: 0u16,
+        app_output: null,
+        slen: 0u16,
+        logs: [UipRuntimeLog { code: 0 as byte, arg0: 0u16, arg1: 0u16 }: 16],
+        ipid: 0u16,
+        te_reply: false
+    };
+}
+
+fn hello_on_connect(rt: &UipRuntime, msg: &byte) void {
+    if uip_connected(rt.flags) {
+        uip_send(rt, msg, 10u16);
+    }
+}
+
+test "connected event sends helloworld" {
+    var rt: UipRuntime = make_runtime();
+    uip_runtime_init(&rt);
+    rt.flags = (UIP_CONNECTED as! byte).value;
+    var msg: [byte: 10] = ['h','e','l','l','o','w','o','r','l','d'];
+    hello_on_connect(&rt, &msg[0]);
+    try assert_eq_bool(uip_connected(rt.flags), true);
+    try assert_eq_i32(rt.slen as i32, 10);
+    try assert_eq_bool(rt.sappdata != null, true);
+    try assert_eq_i32(rt.sappdata[0] as i32, msg[0] as i32);
+    try assert_eq_i32(rt.sappdata[9] as i32, msg[9] as i32);
+}

@@ -1,0 +1,26 @@
+# Build artifacts
+.uyacache/
+*.o
+*.a
+*.so
+*.out
+
+# Local runtime outputs
+*.log
+/tmp_uya_*
+
+# Example unix outputs
+examples/unix/*.log
+examples/unix/*.pid
+
+# Editor/OS files
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Python cache
+__pycache__/
+*.pyc
